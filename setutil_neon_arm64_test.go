@@ -86,21 +86,11 @@ func TestUnion2By2NEONRandom(t *testing.T) {
 	}
 }
 
-// forceNEON runs f with the kernel engaged regardless of the dispatch
-// threshold, by calling the kernel path pieces the way union2by2 does.
+// unionViaKernel engages the vector path regardless of the dispatch
+// threshold, via the exact shipped implementation (no duplicated tail
+// logic that could silently diverge).
 func unionViaKernel(set1, set2, buffer []uint16) int {
-	buffer = buffer[:cap(buffer)]
-	var leftover [16]uint16
-	outLen, pos1, pos2, ll := unionKernelNEON(set1, set2, buffer, &uniqshuf[0], &leftover)
-	var tmp [16]uint16
-	if pos1 == len(set1)/8 {
-		m := scalarMergeUnion(leftover[:ll], set1[8*pos1:], tmp[:])
-		outLen += mergeUnionLookahead(tmp[:m], set2[8*pos2:], buffer[outLen:])
-	} else {
-		m := scalarMergeUnion(leftover[:ll], set2[8*pos2:], tmp[:])
-		outLen += mergeUnionLookahead(tmp[:m], set1[8*pos1:], buffer[outLen:])
-	}
-	return outLen
+	return unionNEON(set1, set2, buffer)
 }
 
 func checkKernel(t *testing.T, a, b []uint16, label string) {

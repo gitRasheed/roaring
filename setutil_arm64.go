@@ -12,36 +12,49 @@ func unionKernelNEON(set1, set2, buffer []uint16, shuf *byte, leftover *[16]uint
 // uniqshuf[m] is the 16-byte TBL index vector compacting the lanes NOT set in
 // mask m to the front (0xFF elsewhere; TBL yields 0 for out-of-range).
 // Identical layout to CRoaring's table (generated there by simdunion.py).
-var uniqshuf [256 * 16]byte
+// Initialized via a variable initializer, not init(): package-level variable
+// initializers in other files run before init() functions, and one reaching
+// union2by2 would silently read a zero table.
+var uniqshuf = buildUniqshuf()
 
-func init() {
+func buildUniqshuf() (t [256 * 16]byte) {
 	for m := 0; m < 256; m++ {
 		pos := 0
 		for lane := 0; lane < 8; lane++ {
 			if m&(1<<lane) == 0 {
-				uniqshuf[m*16+pos*2] = byte(2 * lane)
-				uniqshuf[m*16+pos*2+1] = byte(2*lane + 1)
+				t[m*16+pos*2] = byte(2 * lane)
+				t[m*16+pos*2+1] = byte(2*lane + 1)
 				pos++
 			}
 		}
 		for ; pos < 8; pos++ {
-			uniqshuf[m*16+pos*2] = 0xFF
-			uniqshuf[m*16+pos*2+1] = 0xFF
+			t[m*16+pos*2] = 0xFF
+			t[m*16+pos*2+1] = 0xFF
 		}
 	}
+	return t
 }
 
-// Dispatch to the vector kernel only when both inputs reach this size:
-// measured on Graviton2 (Neoverse-N1) and Graviton4 (Neoverse-V2) with
-// varied-data benchmarks, 1024 is the first size where the vector path wins
-// decisively (2.3-3.5x on random shapes) while smaller inputs favor the
-// scalar loop on wide cores.
-const neonUnionThreshold = 1024
+// Dispatch to the vector kernel only when both inputs reach this size.
+// Measured (varied-data, forced-kernel sweeps on Graviton 2 and 4, after
+// the bulk-copy tail fix): at 512 the vector path wins 1.3-1.6x on random
+// and run shapes, is within 6% on density-mismatched inputs, and grows to
+// 3-4x by 1024. Below 512 wins fade toward parity while the scalar loop
+// keeps its advantage on high-overlap inputs, which no size gate can
+// detect (~0.56x at every size on Graviton4).
+const neonUnionThreshold = 512
 
 func union2by2(set1 []uint16, set2 []uint16, buffer []uint16) int {
 	if len(set1) < neonUnionThreshold || len(set2) < neonUnionThreshold {
 		return union2by2scalar(set1, set2, buffer)
 	}
+	return unionNEON(set1, set2, buffer)
+}
+
+// unionNEON is the vector kernel plus its scalar tails; both inputs must
+// have at least 8 elements. Split from union2by2 so tests exercise the
+// exact shipped tail logic regardless of the dispatch threshold.
+func unionNEON(set1 []uint16, set2 []uint16, buffer []uint16) int {
 	// Callers (e.g. lazyorArray) may pass a zero-length buffer with spare
 	// capacity: the historical asm contract only uses the base pointer and
 	// the caller reslices to the returned size afterwards.
@@ -69,6 +82,13 @@ func union2by2(set1 []uint16, set2 []uint16, buffer []uint16) int {
 func mergeUnionLookahead(a, b, out []uint16) int {
 	i, k := 0, 0
 	for j := 0; j < len(b); {
+		// a (the small carry/tail merge) usually drains within a few
+		// elements; bulk-copy the rest of b instead of walking it.
+		// copy is memmove and the write cursor never passes the read
+		// frontier in the aliased iorArray geometry, so this is safe.
+		if i == len(a) {
+			return k + copy(out[k:], b[j:])
+		}
 		var w [8]uint16
 		c := copy(w[:], b[j:])
 		j += c

@@ -32,6 +32,12 @@ func benchPairSeed(shape string, n int, seed int64) (a, b []uint16) {
 			b[i] = uint16(blk*32 + 16 + off)
 		}
 		return a, b
+	case "spread": // density mismatch: a confined to 1/8 of b's range
+		vr := 2 * n
+		if vr > 8192 {
+			vr = 8192
+		}
+		return genSortedUnique(r, n, vr), genSortedUnique(r, n, 65536)
 	case "dupheavy":
 		a = genSortedUnique(r, n, 2*n)
 		b = make([]uint16, n)
@@ -57,9 +63,45 @@ func benchPairSeed(shape string, n int, seed int64) (a, b []uint16) {
 // fast scalar times on wide cores.
 const benchVariants = 16
 
+// Streaming benchmark: cycles through many distinct pre-generated pairs so
+// the branch predictor cannot memorize decision sequences and the working
+// set exceeds cache at higher pair counts — closer to real union workloads
+// than repeating one resident pair. pairs=8 ~ cache-hot, 256 ~ L3, 2048 ~ RAM.
+func BenchmarkUnion2By2Streaming(bench *testing.B) {
+	const n = 4096
+	for _, shape := range []string{"dense50", "dupheavy", "spread"} {
+		for _, pairs := range []int{8, 256, 2048} {
+			as := make([][]uint16, pairs)
+			bs := make([][]uint16, pairs)
+			outs := make([][]uint16, pairs)
+			for v := 0; v < pairs; v++ {
+				as[v], bs[v] = benchPairSeed(shape, n, int64(v))
+				outs[v] = make([]uint16, 2*n)
+			}
+			for _, impl := range []struct {
+				name string
+				fn   func([]uint16, []uint16, []uint16) int
+			}{
+				{"neon", union2by2},
+				{"scalar", union2by2scalar},
+			} {
+				bench.Run(fmt.Sprintf("%s/pairs%d/%s", shape, pairs, impl.name), func(bench *testing.B) {
+					sink := 0
+					bench.ResetTimer()
+					for i := 0; i < bench.N; i++ {
+						v := i % pairs
+						sink += impl.fn(as[v], bs[v], outs[v])
+					}
+					_ = sink
+				})
+			}
+		}
+	}
+}
+
 func BenchmarkUnion2By2(bench *testing.B) {
-	for _, shape := range []string{"dense50", "sparse6", "runs16", "dupheavy"} {
-		for _, n := range []int{64, 256, 1024, 4096} {
+	for _, shape := range []string{"dense50", "sparse6", "runs16", "dupheavy", "spread"} {
+		for _, n := range []int{256, 384, 512, 1024, 4096} {
 			as := make([][]uint16, benchVariants)
 			bs := make([][]uint16, benchVariants)
 			for v := 0; v < benchVariants; v++ {
