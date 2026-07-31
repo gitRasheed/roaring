@@ -98,14 +98,31 @@ loop:
 	MOVHU (R1), R9
 	CMP  R9, R8
 	CSEL LS, R0, R1, R10   // take set1's block on tie/less
+	CSEL LS, R8, R9, R20   // chosen block's head value
 	VLD1 (R10), [V2.H8]
 	CSET LS, R11
 	ADD  R11<<4, R0, R0
 	EOR  $1, R11, R11
 	ADD  R11<<4, R1, R1
+	// disjoint fast path: when the incoming block does not interleave with
+	// the carry (head >= carry's max), the merge is trivially carry||fresh —
+	// skip the network. Predictable branch: run-structured data takes it
+	// nearly always, random data nearly never. Boundary equality is left to
+	// the dedup chain (hence >=, not >).
+	VMOV V0.H[7], R21
+	CMP  R21, R20
+	BHS  disjoint
 	MERGE
 	STOREUNIQ(R2, R17)
 	VORR V2.B16, V2.B16, V1.B16
+	B loop
+
+disjoint:
+	VORR V2.B16, V2.B16, V22.B16   // stash fresh
+	VORR V0.B16, V0.B16, V2.B16    // emit old carry as this round's minimum
+	STOREUNIQ(R2, R17)
+	VORR V2.B16, V2.B16, V1.B16    // laststore = old carry
+	VORR V22.B16, V22.B16, V0.B16  // carry = fresh
 	B loop
 
 done:
