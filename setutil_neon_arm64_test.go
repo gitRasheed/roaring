@@ -145,6 +145,39 @@ func TestUnion2By2NEONLaneStraddleAndHighEnd(t *testing.T) {
 	checkKernel(t, low, high, "adjacent-high")
 }
 
+// Codex xhigh review: consecutive head==carry[7] fast-path streaks with the
+// boundary duplicate recurring at every block seam, including the final
+// carry flush — pins the >= fast path's dedup semantics. Base construction:
+// A=[0..7,15..22,30..37,...], B=[8..15,22..29,...] — every seam shares one
+// value. Run plain, swapped, and in the aliased iorArray geometry.
+func TestUnion2By2NEONEqualityStreak(t *testing.T) {
+	for blocks := 2; blocks <= 64; blocks *= 2 {
+		var a, b []uint16
+		next := uint16(0)
+		for i := 0; i < blocks; i++ {
+			for l := 0; l < 8; l++ {
+				a = append(a, next+uint16(l))
+			}
+			next += 7 // b's block starts at a's block's last value
+			for l := 0; l < 8; l++ {
+				b = append(b, next+uint16(l))
+			}
+			next += 7 // and a's next block starts at b's last value
+		}
+		checkKernel(t, a, b, "equality-streak")
+		checkKernel(t, b, a, "equality-streak-swap")
+
+		want := refUnion(a, b)
+		shared := make([]uint16, len(a)+len(b))
+		copy(shared[len(b):], a)
+		n := unionViaKernel(shared[len(b):], b, shared)
+		if !reflect.DeepEqual(want, shared[:n]) {
+			t.Fatalf("equality-streak aliased, blocks=%d: want %d got %d elems",
+				blocks, len(want), n)
+		}
+	}
+}
+
 // Tightest valid alias geometry: set1 begins at output offset 8 (= len(set2))
 // and set2 has exactly one block, forcing set2 exhaustion and the
 // minimum-gap lookahead tail path.

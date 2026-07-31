@@ -36,13 +36,15 @@ func buildUniqshuf() (t [256 * 16]byte) {
 }
 
 // Dispatch to the vector kernel only when both inputs reach this size.
-// Measured (varied-data, forced-kernel sweeps on Graviton 2 and 4, after
-// the bulk-copy tail fix): at 512 the vector path wins 1.3-1.6x on random
-// and run shapes, is within 6% on density-mismatched inputs, and grows to
-// 3-4x by 1024. Below 512 wins fade toward parity while the scalar loop
-// keeps its advantage on high-overlap inputs, which no size gate can
-// detect (~0.56x at every size on Graviton4).
-const neonUnionThreshold = 512
+// Measured (varied-data, forced-kernel sweeps on Graviton 2 and 4 after the
+// bulk-copy tail fix): Neoverse-N1 has no crossover in range — the kernel
+// wins from n=128 (1.7-2.5x by 256-384) — while the wider Neoverse-V2
+// crosses over near 384 (>=1.02x there, 3-4x by 2048). 384 captures the
+// N1 wins at a worst case of about -11% on density-mismatched inputs on
+// V2. High-overlap inputs stay ~0.56x at every size on V2; no size gate
+// can detect that shape. Measured crossovers are upper bounds: fixed
+// per-variant data still lets the scalar path's predictor memorize.
+const neonUnionThreshold = 384
 
 func union2by2(set1 []uint16, set2 []uint16, buffer []uint16) int {
 	if len(set1) < neonUnionThreshold || len(set2) < neonUnionThreshold {
