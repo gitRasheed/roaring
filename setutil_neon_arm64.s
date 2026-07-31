@@ -4,7 +4,7 @@
 
 // NEON-vectorized main loop for union2by2 (issue #288).
 // Port of CRoaring's union_vector16 with a transposed-bitonic merge network
-// and a branchless block select. Processes full 8-element blocks from both
+// and a branchless main-loop block select. Processes full 8-element blocks from both
 // inputs while both have blocks remaining; the Go wrapper handles tails.
 //
 // Register use:
@@ -15,8 +15,8 @@
 
 // Merge sorted V2 (fresh) with sorted V0 (carry):
 // V2 <- 8 smallest (sorted), V0 <- 8 largest (sorted). Clobbers V3-V7.
-// Transposed bitonic 16-merge; the reversal is applied to the fresh input
-// so it stays off the carried dependency chain.
+// Transposed bitonic 16-merge. The reversal is applied to the fresh input
+// rather than the carry so it stays off the loop-carried dependency chain.
 #define MERGE \
 	VREV64 V2.H8, V3.H8                \
 	VEXT   $8, V3.B16, V3.B16, V3.B16  \
@@ -104,11 +104,9 @@ loop:
 	ADD  R11<<4, R0, R0
 	EOR  $1, R11, R11
 	ADD  R11<<4, R1, R1
-	// disjoint fast path: when the incoming block does not interleave with
-	// the carry (head >= carry's max), the merge is trivially carry||fresh —
-	// skip the network. Predictable branch: run-structured data takes it
-	// nearly always, random data nearly never. Boundary equality is left to
-	// the dedup chain (hence >=, not >).
+	// Disjoint fast path: when head >= carry's max the merged result is
+	// just carry then fresh, so skip the network. Boundary equality falls
+	// to the dedup chain, hence >= rather than >.
 	VMOV V0.H[7], R21
 	CMP  R21, R20
 	BHS  disjoint

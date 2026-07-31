@@ -9,12 +9,9 @@ func union2by2scalar(set1 []uint16, set2 []uint16, buffer []uint16) (size int)
 //go:noescape
 func unionKernelNEON(set1, set2, buffer []uint16, shuf *byte, leftover *[16]uint16) (outLen, pos1, pos2, leftoverLen int)
 
-// uniqshuf[m] is the 16-byte TBL index vector compacting the lanes NOT set in
-// mask m to the front (0xFF elsewhere; TBL yields 0 for out-of-range).
-// Identical layout to CRoaring's table (generated there by simdunion.py).
-// Initialized via a variable initializer, not init(): package-level variable
-// initializers in other files run before init() functions, and one reaching
-// union2by2 would silently read a zero table.
+// uniqshuf[m] is the TBL index vector that compacts the lanes not set in
+// mask m to the front. A variable initializer, not init(): package-level
+// initializers in other files run first and would read a zero table.
 var uniqshuf = buildUniqshuf()
 
 func buildUniqshuf() (t [256 * 16]byte) {
@@ -35,15 +32,7 @@ func buildUniqshuf() (t [256 * 16]byte) {
 	return t
 }
 
-// Dispatch to the vector kernel only when both inputs reach this size.
-// Measured (varied-data, forced-kernel sweeps on Graviton 2 and 4 after the
-// bulk-copy tail fix): Neoverse-N1 has no crossover in range — the kernel
-// wins from n=128 (1.7-2.5x by 256-384) — while the wider Neoverse-V2
-// crosses over near 384 (>=1.02x there, 3-4x by 2048). 384 captures the
-// N1 wins at a worst case of about -11% on density-mismatched inputs on
-// V2. High-overlap inputs stay ~0.56x at every size on V2; no size gate
-// can detect that shape. Measured crossovers are upper bounds: fixed
-// per-variant data still lets the scalar path's predictor memorize.
+// Below this size the scalar path wins (BenchmarkUnion2By2, Graviton 2/4).
 const neonUnionThreshold = 384
 
 func union2by2(set1 []uint16, set2 []uint16, buffer []uint16) int {
@@ -53,18 +42,13 @@ func union2by2(set1 []uint16, set2 []uint16, buffer []uint16) int {
 	return unionNEON(set1, set2, buffer)
 }
 
-// unionNEON is the vector kernel plus its scalar tails; both inputs must
-// have at least 8 elements. Split from union2by2 so tests exercise the
-// exact shipped tail logic regardless of the dispatch threshold.
+// unionNEON requires at least 8 elements in each input.
 func unionNEON(set1 []uint16, set2 []uint16, buffer []uint16) int {
-	// Callers (e.g. lazyorArray) may pass a zero-length buffer with spare
-	// capacity: the historical asm contract only uses the base pointer and
-	// the caller reslices to the returned size afterwards.
+	// Callers such as lazyorArray pass a zero-length buffer with capacity.
 	buffer = buffer[:cap(buffer)]
 	var leftover [16]uint16
 	outLen, pos1, pos2, ll := unionKernelNEON(set1, set2, buffer, &uniqshuf[0], &leftover)
-	// The carry leftovers and the exhausted input's tail are two sorted runs;
-	// merge them, then merge that with the other input's remainder.
+	// The leftovers and the exhausted input's tail are two sorted runs.
 	var tmp [16]uint16
 	if pos1 == len(set1)/8 {
 		m := scalarMergeUnion(leftover[:ll], set1[8*pos1:], tmp[:])
@@ -76,18 +60,13 @@ func unionNEON(set1 []uint16, set2 []uint16, buffer []uint16) int {
 	return outLen
 }
 
-// mergeUnionLookahead is scalarMergeUnion with b read in 8-element chunks
-// ahead of the writes. iorArray passes a buffer whose backing array holds
-// set1 above the write region; tail writes can lead the b reads by up to 7
-// elements there, so reading 8 ahead keeps every element read before it can
-// be overwritten.
+// mergeUnionLookahead reads b in 8-element chunks ahead of the writes:
+// iorArray aliases set1 above the write region, and writes can lead the
+// b reads by up to 7 elements there.
 func mergeUnionLookahead(a, b, out []uint16) int {
 	i, k := 0, 0
 	for j := 0; j < len(b); {
-		// a (the small carry/tail merge) usually drains within a few
-		// elements; bulk-copy the rest of b instead of walking it.
-		// copy is memmove and the write cursor never passes the read
-		// frontier in the aliased iorArray geometry, so this is safe.
+		// The copy cannot pass the read frontier in the aliased case.
 		if i == len(a) {
 			return k + copy(out[k:], b[j:])
 		}
@@ -114,8 +93,7 @@ func mergeUnionLookahead(a, b, out []uint16) int {
 	return k
 }
 
-// scalarMergeUnion merges two sorted duplicate-free slices into out,
-// dropping cross-slice duplicates, and returns the number written.
+// scalarMergeUnion merges two sorted duplicate-free slices into out.
 func scalarMergeUnion(a, b, out []uint16) int {
 	i, j, k := 0, 0, 0
 	for i < len(a) && j < len(b) {

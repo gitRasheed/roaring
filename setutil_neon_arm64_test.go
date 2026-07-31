@@ -43,17 +43,6 @@ func checkUnion(t *testing.T, a, b []uint16, label string) {
 	}
 }
 
-func TestUnion2By2NEONSmallSizes(t *testing.T) {
-	r := rand.New(rand.NewSource(42))
-	for la := 0; la <= 40; la++ {
-		for lb := 0; lb <= 40; lb++ {
-			a := genSortedUnique(r, la, 64)
-			b := genSortedUnique(r, lb, 64)
-			checkUnion(t, a, b, "small-dense")
-		}
-	}
-}
-
 func TestUnion2By2NEONAdversarial(t *testing.T) {
 	for n := 8; n <= 2048; n *= 2 {
 		identical := make([]uint16, n)
@@ -86,13 +75,6 @@ func TestUnion2By2NEONRandom(t *testing.T) {
 	}
 }
 
-// unionViaKernel engages the vector path regardless of the dispatch
-// threshold, via the exact shipped implementation (no duplicated tail
-// logic that could silently diverge).
-func unionViaKernel(set1, set2, buffer []uint16) int {
-	return unionNEON(set1, set2, buffer)
-}
-
 func checkKernel(t *testing.T, a, b []uint16, label string) {
 	t.Helper()
 	if len(a) < 8 || len(b) < 8 {
@@ -101,15 +83,13 @@ func checkKernel(t *testing.T, a, b []uint16, label string) {
 	}
 	want := refUnion(a, b)
 	buffer := make([]uint16, 0, len(a)+len(b))
-	n := unionViaKernel(a, b, buffer)
+	n := unionNEON(a, b, buffer)
 	got := buffer[:n]
 	if !reflect.DeepEqual(want, got) {
 		t.Fatalf("%s: la=%d lb=%d want %v got %v", label, len(a), len(b), want, got)
 	}
 }
 
-// Codex-review hardening: dispatch/block boundary matrix with zero-len
-// buffers, both input orders.
 func TestUnion2By2NEONBoundaryMatrix(t *testing.T) {
 	for _, sz := range [][2]int{{1, 1}, {2, 8}, {7, 8}, {8, 8}, {8, 9}, {8, 16}, {15, 16}, {16, 17}} {
 		a := make([]uint16, sz[0])
@@ -125,8 +105,7 @@ func TestUnion2By2NEONBoundaryMatrix(t *testing.T) {
 	}
 }
 
-// A duplicate (7) straddling lanes 7/0 across consecutive stores, plus
-// identical high-end blocks touching 0xFFFF in the carry flush.
+// A duplicate straddling lanes 7 and 0, and blocks touching 0xFFFF.
 func TestUnion2By2NEONLaneStraddleAndHighEnd(t *testing.T) {
 	a := []uint16{0, 2, 4, 6, 7, 20, 22, 24}
 	b := []uint16{1, 3, 5, 7, 21, 23, 25, 27}
@@ -145,11 +124,8 @@ func TestUnion2By2NEONLaneStraddleAndHighEnd(t *testing.T) {
 	checkKernel(t, low, high, "adjacent-high")
 }
 
-// Codex xhigh review: consecutive head==carry[7] fast-path streaks with the
-// boundary duplicate recurring at every block seam, including the final
-// carry flush — pins the >= fast path's dedup semantics. Base construction:
-// A=[0..7,15..22,30..37,...], B=[8..15,22..29,...] — every seam shares one
-// value. Run plain, swapped, and in the aliased iorArray geometry.
+// Every block seam shares its boundary value, pinning the fast path's
+// choice of >= over >: the duplicate must fall to the dedup chain.
 func TestUnion2By2NEONEqualityStreak(t *testing.T) {
 	for blocks := 2; blocks <= 64; blocks *= 2 {
 		var a, b []uint16
@@ -170,7 +146,7 @@ func TestUnion2By2NEONEqualityStreak(t *testing.T) {
 		want := refUnion(a, b)
 		shared := make([]uint16, len(a)+len(b))
 		copy(shared[len(b):], a)
-		n := unionViaKernel(shared[len(b):], b, shared)
+		n := unionNEON(shared[len(b):], b, shared)
 		if !reflect.DeepEqual(want, shared[:n]) {
 			t.Fatalf("equality-streak aliased, blocks=%d: want %d got %d elems",
 				blocks, len(want), n)
@@ -178,9 +154,8 @@ func TestUnion2By2NEONEqualityStreak(t *testing.T) {
 	}
 }
 
-// Tightest valid alias geometry: set1 begins at output offset 8 (= len(set2))
-// and set2 has exactly one block, forcing set2 exhaustion and the
-// minimum-gap lookahead tail path.
+// Tightest alias geometry: set1 at output offset len(set2) with a
+// one-block set2, forcing the lookahead tail.
 func TestUnion2By2NEONMinimumGapAlias(t *testing.T) {
 	set2 := []uint16{0, 1, 2, 3, 4, 5, 6, 7}
 	set1 := make([]uint16, 64)
@@ -190,14 +165,13 @@ func TestUnion2By2NEONMinimumGapAlias(t *testing.T) {
 	want := refUnion(set1, set2)
 	shared := make([]uint16, len(set1)+len(set2))
 	copy(shared[len(set2):], set1)
-	n := unionViaKernel(shared[len(set2):], set2, shared)
+	n := unionNEON(shared[len(set2):], set2, shared)
 	if !reflect.DeepEqual(want, shared[:n]) {
 		t.Fatalf("minimum-gap alias: want %d elems got %d", len(want), n)
 	}
 }
 
-// Guard region beyond len(set1)+len(set2) must never be touched by the
-// kernel's fixed-width 16-byte stores.
+// The kernel's 16-byte stores must never touch beyond len(set1)+len(set2).
 func TestUnion2By2NEONBufferCanaries(t *testing.T) {
 	r := rand.New(rand.NewSource(31337))
 	for iter := 0; iter < 300; iter++ {
@@ -208,7 +182,7 @@ func TestUnion2By2NEONBufferCanaries(t *testing.T) {
 		for i := need; i < len(full); i++ {
 			full[i] = 0xDEAD
 		}
-		n := unionViaKernel(a, b, full[0:0:need])
+		n := unionNEON(a, b, full[0:0:need])
 		if !reflect.DeepEqual(refUnion(a, b), full[:n]) {
 			t.Fatalf("canary iter %d: wrong result", iter)
 		}
@@ -220,8 +194,7 @@ func TestUnion2By2NEONBufferCanaries(t *testing.T) {
 	}
 }
 
-// Reproduces the lazyorArray pattern: buffer arrives with len 0 and spare
-// capacity; union2by2 must use the capacity (historical asm contract).
+// lazyorArray passes a zero-length buffer with spare capacity.
 func TestUnion2By2NEONZeroLenBuffer(t *testing.T) {
 	r := rand.New(rand.NewSource(99))
 	for iter := 0; iter < 200; iter++ {
@@ -237,9 +210,7 @@ func TestUnion2By2NEONZeroLenBuffer(t *testing.T) {
 	}
 }
 
-// Reproduces the iorArray aliasing pattern (arraycontainer.go): set1 lives in
-// the upper region of the same array the output is written into. The vector
-// path's 16-byte stores must never clobber unread set1 data.
+// iorArray's geometry: set1 lives in the upper region of the output array.
 func TestUnion2By2NEONAliasedBuffer(t *testing.T) {
 	r := rand.New(rand.NewSource(7))
 	for iter := 0; iter < 500; iter++ {

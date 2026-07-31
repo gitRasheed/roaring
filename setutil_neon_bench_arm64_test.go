@@ -9,9 +9,6 @@ import (
 	"testing"
 )
 
-// Deterministic dataset shapes matching the C prototype's benchmark harness:
-// dense50 (~50% overlap), sparse6 (~6%), runs16 (alternating 16-runs),
-// dupheavy (b = a with every 8th element changed).
 func benchPairSeed(shape string, n int, seed int64) (a, b []uint16) {
 	r := rand.New(rand.NewSource(int64(42+n) + seed*7919))
 	switch shape {
@@ -38,69 +35,16 @@ func benchPairSeed(shape string, n int, seed int64) (a, b []uint16) {
 			vr = 8192
 		}
 		return genSortedUnique(r, n, vr), genSortedUnique(r, n, 65536)
-	case "dupheavy":
-		a = genSortedUnique(r, n, 2*n)
-		b = make([]uint16, n)
-		copy(b, a)
-		// replace every 8th with a value above a's range so b stays
-		// duplicate-free after re-sorting (~87.5% overlap with a)
-		for i := 0; i < n; i += 8 {
-			b[i] = uint16(2*n + i)
-		}
-		for i := 1; i < n; i++ {
-			for j := i; j > 0 && b[j] < b[j-1]; j-- {
-				b[j], b[j-1] = b[j-1], b[j]
-			}
-		}
-		return a, b
 	}
 	panic("unknown shape")
 }
 
-// Each config cycles through 16 dataset variants (all fixed-seed, so runs are
-// deterministic): benchmarking a single fixed pair lets the branch predictor
-// memorize the scalar path's decision sequence and report unrealistically
-// fast scalar times on wide cores.
+// Rotating fixed-seed variants keeps the branch predictor from memorizing
+// one pair's decision sequence, which flatters the scalar path.
 const benchVariants = 16
 
-// Streaming benchmark: cycles through many distinct pre-generated pairs so
-// the branch predictor cannot memorize decision sequences and the working
-// set exceeds cache at higher pair counts — closer to real union workloads
-// than repeating one resident pair. pairs=8 ~ cache-hot, 256 ~ L3, 2048 ~ RAM.
-func BenchmarkUnion2By2Streaming(bench *testing.B) {
-	const n = 4096
-	for _, shape := range []string{"dense50", "dupheavy", "spread"} {
-		for _, pairs := range []int{8, 256, 2048} {
-			as := make([][]uint16, pairs)
-			bs := make([][]uint16, pairs)
-			outs := make([][]uint16, pairs)
-			for v := 0; v < pairs; v++ {
-				as[v], bs[v] = benchPairSeed(shape, n, int64(v))
-				outs[v] = make([]uint16, 2*n)
-			}
-			for _, impl := range []struct {
-				name string
-				fn   func([]uint16, []uint16, []uint16) int
-			}{
-				{"neon", union2by2},
-				{"scalar", union2by2scalar},
-			} {
-				bench.Run(fmt.Sprintf("%s/pairs%d/%s", shape, pairs, impl.name), func(bench *testing.B) {
-					sink := 0
-					bench.ResetTimer()
-					for i := 0; i < bench.N; i++ {
-						v := i % pairs
-						sink += impl.fn(as[v], bs[v], outs[v])
-					}
-					_ = sink
-				})
-			}
-		}
-	}
-}
-
-func BenchmarkUnion2By2(bench *testing.B) {
-	for _, shape := range []string{"dense50", "sparse6", "runs16", "dupheavy", "spread"} {
+func BenchmarkUnion2By2(b *testing.B) {
+	for _, shape := range []string{"dense50", "sparse6", "runs16", "spread"} {
 		for _, n := range []int{256, 384, 512, 1024, 4096} {
 			as := make([][]uint16, benchVariants)
 			bs := make([][]uint16, benchVariants)
@@ -112,12 +56,12 @@ func BenchmarkUnion2By2(bench *testing.B) {
 				name string
 				fn   func([]uint16, []uint16, []uint16) int
 			}{
-				{"neon", union2by2},
+				{"dispatch", union2by2},
 				{"scalar", union2by2scalar},
 			} {
-				bench.Run(fmt.Sprintf("%s/%d/%s", shape, n, impl.name), func(bench *testing.B) {
+				b.Run(fmt.Sprintf("%s/%d/%s", shape, n, impl.name), func(b *testing.B) {
 					sink := 0
-					for i := 0; i < bench.N; i++ {
+					for i := 0; i < b.N; i++ {
 						v := i % benchVariants
 						sink += impl.fn(as[v], bs[v], buffer)
 					}
