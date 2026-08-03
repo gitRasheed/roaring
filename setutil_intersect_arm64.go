@@ -13,10 +13,10 @@ func intersectKernelNEON(set1, set2, buffer []uint16, shuf *byte, spill *[8]uint
 // the union kernel's dedup masks, so it reuses uniqshuf via an inverted
 // index (uniqshuf[m^0xFF] keeps exactly the lanes set in m).
 
-// Below these sizes the scalar paths win (BenchmarkIntersect*, Graviton 4).
+// The kernels usually win from n=8..16; 32 keeps margin on unmeasured cores.
 const (
-	neonIntersectCardThreshold = 64
-	neonIntersectThreshold     = 128
+	neonIntersectCardThreshold = 32
+	neonIntersectThreshold     = 32
 )
 
 func intersection2by2(

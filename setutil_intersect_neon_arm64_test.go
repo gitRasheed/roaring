@@ -131,8 +131,8 @@ func TestIntersectNEONRangeDisjoint(t *testing.T) {
 }
 
 func TestIntersectNEONGallopingBoundary(t *testing.T) {
-	// 32x2048 is just below the 64:1 galloping cutoff; 32x2049 crosses it.
-	// Pin both, both orientations.
+	// 32x2048 stays on the kernel; 32x2049 crosses the 64:1 cutoff into
+	// galloping. Pin both, both orientations.
 	rng := rand.New(rand.NewSource(5))
 	small := genSortedUnique(rng, 32, 65536)
 	for _, large := range []int{2048, 2049} {
