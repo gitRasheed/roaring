@@ -19,6 +19,64 @@ func checkPair(t *testing.T, label string, a, b []uint16) {
 	if want != got {
 		t.Fatalf("%s swapped: la=%d lb=%d want %d got %d", label, len(b), len(a), want, got)
 	}
+	checkMaterialize(t, label, a, b)
+	checkMaterialize(t, label+" swapped", b, a)
+}
+
+const canary = 0xABAB
+
+// checkMaterialize runs intersection2by2 against the scalar reference under
+// the two shipping buffer contracts: an exact min(la,lb)-capacity buffer
+// with canaries beyond it (andArray), and a buffer aliasing set1 in place
+// (iandArray).
+func checkMaterialize(t *testing.T, label string, a, b []uint16) {
+	t.Helper()
+	m := len(a)
+	if len(b) < m {
+		m = len(b)
+	}
+	want := make([]uint16, m)
+	wn := localintersect2by2(a, b, want)
+	want = want[:wn]
+
+	backing := make([]uint16, m+16)
+	for i := range backing {
+		backing[i] = canary
+	}
+	gn := intersection2by2(a, b, backing[0:0:m])
+	if gn != wn {
+		t.Fatalf("%s: la=%d lb=%d want len %d got %d", label, len(a), len(b), wn, gn)
+	}
+	for i := 0; i < wn; i++ {
+		if backing[i] != want[i] {
+			t.Fatalf("%s: la=%d lb=%d idx %d want %d got %d", label, len(a), len(b), i, want[i], backing[i])
+		}
+	}
+	for i := m; i < m+16; i++ {
+		if backing[i] != canary {
+			t.Fatalf("%s: overstore past cap at %d (cap %d)", label, i, m)
+		}
+	}
+
+	inplace := make([]uint16, len(a)+16)
+	for i := range inplace {
+		inplace[i] = canary
+	}
+	copy(inplace, a)
+	gn = intersection2by2(inplace[:len(a)], b, inplace[0:len(a):len(a)])
+	if gn != wn {
+		t.Fatalf("%s inplace: la=%d lb=%d want len %d got %d", label, len(a), len(b), wn, gn)
+	}
+	for i := 0; i < wn; i++ {
+		if inplace[i] != want[i] {
+			t.Fatalf("%s inplace: idx %d want %d got %d", label, i, want[i], inplace[i])
+		}
+	}
+	for i := len(a); i < len(a)+16; i++ {
+		if inplace[i] != canary {
+			t.Fatalf("%s inplace: overstore past cap at %d (cap %d)", label, i, len(a))
+		}
+	}
 }
 
 func TestIntersectNEONSmallSizes(t *testing.T) {
@@ -80,6 +138,37 @@ func TestIntersectNEONGallopingBoundary(t *testing.T) {
 	for _, large := range []int{2048, 2049} {
 		big := genSortedUnique(rng, large, 65536)
 		checkPair(t, "gallop-boundary", small, big)
+	}
+}
+
+func TestIntersectNEONInPlaceSpareCap(t *testing.T) {
+	// iandArray passes set1's backing array with len==cardinality but often
+	// cap>len; the wrapper reslices to cap, changing which store path runs.
+	rng := rand.New(rand.NewSource(6))
+	for _, n := range []int{64, 256, 1000} {
+		a := genSortedUnique(rng, n, 4*n)
+		b := genSortedUnique(rng, n, 4*n)
+		want := make([]uint16, n)
+		wn := localintersect2by2(a, b, want)
+		backing := make([]uint16, n+64)
+		for i := range backing {
+			backing[i] = canary
+		}
+		copy(backing, a)
+		gn := intersection2by2(backing[:n], b, backing[:n:n+40])
+		if gn != wn {
+			t.Fatalf("sparecap: n=%d want len %d got %d", n, wn, gn)
+		}
+		for i := 0; i < wn; i++ {
+			if backing[i] != want[i] {
+				t.Fatalf("sparecap: idx %d want %d got %d", i, want[i], backing[i])
+			}
+		}
+		for i := n + 40; i < n+64; i++ {
+			if backing[i] != canary {
+				t.Fatalf("sparecap: overstore past cap at %d", i)
+			}
+		}
 	}
 }
 

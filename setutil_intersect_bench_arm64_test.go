@@ -96,6 +96,64 @@ func benchIntersectPair(shape string, n int, seed int64) (a, b []uint16) {
 var benchIntersectShapes = []string{"dense50", "sparse6", "runs", "coinflip", "skew8", "overlap95"}
 var benchIntersectSizes = []int{8, 16, 24, 32, 64, 128, 256, 512, 1001, 4096}
 
+func BenchmarkIntersect2By2(b *testing.B) {
+	for _, shape := range benchIntersectShapes {
+		for _, n := range benchIntersectSizes {
+			as := make([][]uint16, benchVariants)
+			bs := make([][]uint16, benchVariants)
+			for v := 0; v < benchVariants; v++ {
+				as[v], bs[v] = benchIntersectPair(shape, n, int64(v))
+			}
+			// andArray allocates exactly min(len1,len2); mirror that cap.
+			mins := make([]int, benchVariants)
+			for v := 0; v < benchVariants; v++ {
+				mins[v] = len(as[v])
+				if len(bs[v]) < mins[v] {
+					mins[v] = len(bs[v])
+				}
+			}
+			buffer := make([]uint16, n+8)
+			scratch := make([]uint16, n+8)
+			for _, impl := range []struct {
+				name string
+				fn   func([]uint16, []uint16, []uint16) int
+			}{
+				{"dispatch", intersection2by2},
+				{"scalar", localintersect2by2},
+			} {
+				b.Run(fmt.Sprintf("%s/%d/%s", shape, n, impl.name), func(b *testing.B) {
+					sink := 0
+					for i := 0; i < b.N; i++ {
+						v := i % benchVariants
+						sink += impl.fn(as[v], bs[v], buffer[:0:mins[v]])
+					}
+					_ = sink
+				})
+			}
+			// In-place rows model iandArray: output aliases set1, so each
+			// iteration pays one copy to restore the input; both rows pay
+			// it, keeping the ratio honest.
+			for _, impl := range []struct {
+				name string
+				fn   func([]uint16, []uint16, []uint16) int
+			}{
+				{"inplace", intersection2by2},
+				{"inplaceScalar", localintersect2by2},
+			} {
+				b.Run(fmt.Sprintf("%s/%d/%s", shape, n, impl.name), func(b *testing.B) {
+					sink := 0
+					for i := 0; i < b.N; i++ {
+						v := i % benchVariants
+						m := copy(scratch, as[v])
+						sink += impl.fn(scratch[:m], bs[v], scratch[:0:m])
+					}
+					_ = sink
+				})
+			}
+		}
+	}
+}
+
 func BenchmarkIntersectCard2By2(b *testing.B) {
 	for _, shape := range benchIntersectShapes {
 		for _, n := range benchIntersectSizes {

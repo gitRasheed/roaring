@@ -169,20 +169,6 @@ func union2by2Cardinality(set1 []uint16, set2 []uint16) int {
 	return pos
 }
 
-func intersection2by2(
-	set1 []uint16,
-	set2 []uint16,
-	buffer []uint16,
-) int {
-	if len(set1)*64 < len(set2) {
-		return onesidedgallopingintersect2by2(set1, set2, buffer)
-	} else if len(set2)*64 < len(set1) {
-		return onesidedgallopingintersect2by2(set2, set1, buffer)
-	} else {
-		return localintersect2by2(set1, set2, buffer)
-	}
-}
-
 // intersects2by2 computes whether the two sets intersect
 func intersects2by2(
 	set1 []uint16,
