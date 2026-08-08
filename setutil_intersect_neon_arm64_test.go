@@ -5,6 +5,7 @@ package roaring
 
 import (
 	"math/rand"
+	"sort"
 	"testing"
 )
 
@@ -252,5 +253,71 @@ func TestIntersectNEONSelfAlias(t *testing.T) {
 		if g := intersection2by2(set, set, out[:0:n]); g != len(set) {
 			t.Fatalf("same-inputs: n=%d want %d got %d", n, len(set), g)
 		}
+	}
+}
+
+// genSortedDup returns a sorted array that may repeat values: it passes
+// Validate (which accepts adjacent equals) while violating the sorted-set
+// contract.
+func genSortedDup(r *rand.Rand, n, valRange int) []uint16 {
+	s := make([]uint16, n)
+	for i := range s {
+		s[i] = uint16(r.Intn(valRange))
+	}
+	sort.Slice(s, func(i, j int) bool { return s[i] < s[j] })
+	return s
+}
+
+// Results on duplicate-bearing input are unspecified; the pinned guarantee
+// is that no store escapes the buffer's capacity.
+func TestIntersectNEONDuplicateInputBounded(t *testing.T) {
+	check := func(label string, a, b []uint16) {
+		t.Helper()
+		m := len(a)
+		if len(b) < m {
+			m = len(b)
+		}
+		backing := make([]uint16, m+16)
+		for i := range backing {
+			backing[i] = canary
+		}
+		func() {
+			// Unspecified results may surface as slice-bounds panics in
+			// the scalar tail; only out-of-bounds stores are failures.
+			defer func() { _ = recover() }()
+			intersection2by2(a, b, backing[0:0:m])
+			intersection2by2Cardinality(a, b)
+		}()
+		for i := m; i < m+16; i++ {
+			if backing[i] != canary {
+				t.Fatalf("%s: store past cap at index %d", label, i)
+			}
+		}
+	}
+
+	flat := make([]uint16, 64)
+	for i := range flat {
+		flat[i] = 100
+	}
+	ramp := make([]uint16, 32)
+	for i := range ramp {
+		ramp[i] = uint16(100 + i)
+	}
+	seam := make([]uint16, 33)
+	for i := 0; i < 32; i++ {
+		seam[i] = uint16(69 + i)
+	}
+	seam[32] = 100
+	check("flat", flat, ramp)
+	check("flat-swapped", ramp, flat)
+	check("dup-seam", ramp, seam)
+	check("dup-seam-swapped", seam, ramp)
+
+	rng := rand.New(rand.NewSource(23))
+	for iter := 0; iter < 500; iter++ {
+		la := 8 + rng.Intn(2000)
+		lb := 8 + rng.Intn(2000)
+		valRange := 4 + rng.Intn(2*(la+lb))
+		check("fuzz", genSortedDup(rng, la, valRange), genSortedDup(rng, lb, valRange))
 	}
 }

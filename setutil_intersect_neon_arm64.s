@@ -226,7 +226,9 @@ mloop:
 	VLD1 (R16), [V4.B16]
 	VTBL V4.B16, [V0.B16], V4.B16
 
-	// full store only if out+8 <= cap and out <= pos1 (byte distances)
+	// full store only if out+8 <= cap and out <= pos1 (byte distances
+	// from each slice's own base: exact when buffer aliases set1, safely
+	// conservative when it does not)
 	ADD  $16, R2, R16
 	CMP  R7, R16
 	BHI  mprefix
@@ -243,6 +245,13 @@ mprefix:
 	// reach here: 8 new matches imply no earlier matches from this block
 	// (a lane matches at most one set2 value), so out <= pos1, and 8 more
 	// outputs still fit the capacity; both guards then take the full store.
+	// That argument needs strictly increasing inputs, which Validate does
+	// not enforce (adjacent equal values pass): clamp the count to the
+	// remaining capacity so no input can drive a store past cap.
+	SUB  R2, R7, R16
+	LSR  $1, R16, R16
+	CMP  R16, R14
+	CSEL LS, R14, R16, R14
 	VMOV V4.D[0], R16
 	VMOV V4.D[1], R17
 	TBZ  $2, R14, mpref2
@@ -263,10 +272,13 @@ madv:
 	CMP R11, R9
 	BHI madvB
 	BLO madvA
+	// equal maxima retire both blocks; advance set2 before either exit so
+	// pos2 never points back into memory the store path may have rewritten
+	// (self-intersection aliases all three slices)
 	ADD $16, R0
+	ADD $16, R1
 	CMP R3, R0
 	BHS mdoneNoSpill
-	ADD $16, R1
 	CMP R4, R1
 	// the old set1 block is fully consumed and its successor never loaded:
 	// no spill, the successor is part of the (unclobbered) memory tail

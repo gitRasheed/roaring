@@ -14,6 +14,9 @@ func intersectKernelNEON(set1, set2, buffer []uint16, shuf *byte, spill *[8]uint
 // index (uniqshuf[m^0xFF] keeps exactly the lanes set in m).
 
 // The kernels usually win from n=8..16; 32 keeps margin on unmeasured cores.
+// Inputs are sorted sets. Arrays with duplicate values (Validate accepts
+// adjacent equals) get unspecified results, but stores stay within the
+// buffer's capacity.
 const (
 	neonIntersectCardThreshold = 32
 	neonIntersectThreshold     = 32
@@ -35,7 +38,9 @@ func intersection2by2(
 	if set1[len(set1)-1] < set2[0] || set2[len(set2)-1] < set1[0] {
 		return 0
 	}
-	// Callers may pass a zero-length buffer with capacity (andArray).
+	// Callers may pass a zero-length buffer with capacity (andArray). The
+	// spare capacity is never shared memory: copy-on-write containers are
+	// cloned before iand.
 	buffer = buffer[:cap(buffer)]
 	var spill [8]uint16
 	outLen, pos1, pos2, spilled := intersectKernelNEON(set1, set2, buffer, &uniqshuf[0], &spill)
