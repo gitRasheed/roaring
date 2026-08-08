@@ -220,3 +220,37 @@ func TestIntersectNEONRandom(t *testing.T) {
 		checkPair(t, "random", a, b)
 	}
 }
+
+// iandArray's self-intersection geometry (And of a bitmap with itself):
+// set1, set2, and the output are the same backing array.
+func TestIntersectNEONSelfAlias(t *testing.T) {
+	rng := rand.New(rand.NewSource(13))
+	for iter := 0; iter < 200; iter++ {
+		n := 8 + rng.Intn(3000)
+		set := genSortedUnique(rng, n, 256+rng.Intn(65280))
+		n = len(set)
+
+		shared := make([]uint16, n, n+16)
+		copy(shared, set)
+		got := shared[:intersection2by2(shared, shared, shared)]
+		if len(got) != len(set) {
+			t.Fatalf("self-alias: n=%d got len %d", n, len(got))
+		}
+		for i := range set {
+			if got[i] != set[i] {
+				t.Fatalf("self-alias: n=%d idx %d want %d got %d", n, i, set[i], got[i])
+			}
+		}
+
+		if c := intersection2by2Cardinality(set, set); c != len(set) {
+			t.Fatalf("self-card: n=%d want %d got %d", n, len(set), c)
+		}
+
+		// set1 == set2 with an independent buffer (top-level And of a
+		// bitmap with itself).
+		out := make([]uint16, n)
+		if g := intersection2by2(set, set, out[:0:n]); g != len(set) {
+			t.Fatalf("same-inputs: n=%d want %d got %d", n, len(set), g)
+		}
+	}
+}

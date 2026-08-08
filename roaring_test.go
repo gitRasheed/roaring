@@ -4223,3 +4223,38 @@ func TestOrSelfInPlace(t *testing.T) {
 		})
 	}
 }
+
+// Self-intersection must leave the bitmap unchanged. iandArray passes the
+// container's own array as both inputs and the output.
+func TestAndSelfInPlace(t *testing.T) {
+	cases := []struct {
+		name string
+		n    int
+	}{
+		{"below-threshold", 31},
+		{"neon-sized", 500},
+		{"multi-block", 3000},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rb := New()
+			for v := 0; v < tc.n; v++ {
+				rb.Add(uint32(v * 3))
+			}
+			want := rb.ToArray()
+			rb.And(rb)
+			if err := rb.Validate(); err != nil {
+				t.Fatalf("invalid after self-And: %v", err)
+			}
+			got := rb.ToArray()
+			if len(got) != len(want) {
+				t.Fatalf("self-And changed cardinality: got %d want %d", len(got), len(want))
+			}
+			for i := range want {
+				if got[i] != want[i] {
+					t.Fatalf("self-And corrupted index %d: got %d want %d", i, got[i], want[i])
+				}
+			}
+		})
+	}
+}
