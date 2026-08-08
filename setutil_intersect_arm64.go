@@ -13,13 +13,14 @@ func intersectKernelNEON(set1, set2, buffer []uint16, shuf *byte, spill *[8]uint
 // the union kernel's dedup masks, so it reuses uniqshuf via an inverted
 // index (uniqshuf[m^0xFF] keeps exactly the lanes set in m).
 
-// The kernels usually win from n=8..16; 32 keeps margin on unmeasured cores.
+// From n=16 up the kernels win on every measured shape; below, the lone
+// vector block plus its scalar tail usually loses.
 // Inputs are sorted sets. Arrays with duplicate values (Validate accepts
 // adjacent equals) get unspecified results, but stores stay within the
 // buffer's capacity.
 const (
-	neonIntersectCardThreshold = 32
-	neonIntersectThreshold     = 32
+	neonIntersectCardThreshold = 16
+	neonIntersectThreshold     = 16
 )
 
 func intersection2by2(
