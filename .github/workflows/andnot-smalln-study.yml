@@ -1,0 +1,35 @@
+name: andnot-smalln-study
+on:
+  push:
+    branches: [andnot-smalln-study]
+
+jobs:
+  sweep:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, macos-15]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.2'
+      - name: cpu info
+        run: |
+          uname -a
+          sysctl -n machdep.cpu.brand_string hw.ncpu
+          go version
+      - name: sanity differential test
+        run: go test -run 'TestAndnotStudyMatchesScalar|TestAndnotNEON' -count=1 .
+      - name: small-n sweep
+        run: |
+          for pass in 1 2 3 4 5; do
+            echo "=== pass $pass ===" >> smalln-${{ matrix.os }}.txt
+            go test -run '^$' -bench 'BenchmarkAndnotSmallN' -benchtime 100000x . >> smalln-${{ matrix.os }}.txt
+          done
+          grep -c 'ns/op' smalln-${{ matrix.os }}.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: smalln-${{ matrix.os }}
+          path: smalln-${{ matrix.os }}.txt
