@@ -242,6 +242,21 @@ func TestIntersectNEONDuplicateInputBounded(t *testing.T) {
 	check("flat-swapped", ramp, flat)
 	check("dup-seam", ramp, seam)
 	check("dup-seam-swapped", seam, ramp)
+
+	// Witnesses that drive the prefix store to the capacity edge: without
+	// the kernel's store clamp these corrupt the canaries.
+	wa := []uint16{100, 100, 100, 100, 101, 101, 101, 101, 101, 101, 102, 102, 102, 102, 103, 103}
+	wb := []uint16{100, 101, 101, 101, 101, 101, 102, 102, 102, 102, 102, 102, 102, 102, 102, 102}
+	check("clamp-witness", wa, wb)
+	check("clamp-witness-swapped", wb, wa)
+	deep := make([]uint16, 25)
+	for i := range deep {
+		deep[i] = 100
+	}
+	deep[24] = 200
+	tall := []uint16{100, 100, 100, 100, 100, 100, 100, 200, 201, 202, 203, 204, 205, 206, 207, 208}
+	check("clamp-spill", tall, deep)
+	check("clamp-spill-swapped", deep, tall)
 }
 
 // Slice starts misaligned independently for set1, set2, and the output:
