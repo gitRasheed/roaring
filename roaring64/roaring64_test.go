@@ -52,6 +52,24 @@ func TestIssue266(t *testing.T) {
 	}
 }
 
+func TestParOr64LeavesArgumentsIntact(t *testing.T) {
+	a := BitmapOf(1)
+	b := BitmapOf(2)
+	bms := []*Bitmap{New(), a, b}
+	result := ParOr(2, bms...)
+	assert.True(t, result.Equals(BitmapOf(1, 2)))
+	assert.True(t, bms[0].IsEmpty())
+	assert.Equal(t, a, bms[1])
+	assert.Equal(t, b, bms[2])
+}
+
+func TestParOr64SingleInputCopied(t *testing.T) {
+	a := BitmapOf(1)
+	result := ParOr(0, New(), a)
+	result.Add(2)
+	assert.False(t, a.Contains(2))
+}
+
 func TestParOr64(t *testing.T) {
 	t.Run("Test 1", func(t *testing.T) {
 		a := BitmapOf(0, 1, 2, 3, 4)

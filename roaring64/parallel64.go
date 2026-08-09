@@ -16,7 +16,9 @@ func ParOr(parallelism int, bitmaps ...*Bitmap) *Bitmap {
 	var lKey uint32 = maxUint32
 	var hKey uint32
 
-	bitmapsFiltered := bitmaps[:0]
+	// Filter into a fresh slice: compacting into bitmaps[:0] would
+	// overwrite the caller's backing array.
+	bitmapsFiltered := make([]*Bitmap, 0, len(bitmaps))
 	for _, b := range bitmaps {
 		if !b.IsEmpty() {
 			bitmapsFiltered = append(bitmapsFiltered, b)
@@ -32,7 +34,7 @@ func ParOr(parallelism int, bitmaps ...*Bitmap) *Bitmap {
 	if lKey == maxUint32 && hKey == 0 {
 		return New()
 	} else if len(bitmaps) == 1 {
-		return bitmaps[0]
+		return bitmaps[0].Clone()
 	}
 	// The following might overflow and we do not want that!
 	// as it might lead to a channel of size 0 later which,

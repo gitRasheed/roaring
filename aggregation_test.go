@@ -300,3 +300,14 @@ func TestIssue330(t *testing.T) {
 	checkValidity(t, FastOr(bitmaps[0], bitmaps[1], bitmaps[2]))
 	checkValidity(t, FastOr(bitmaps[2], bitmaps[1], bitmaps[0]))
 }
+
+func TestParOrLeavesArgumentsIntact(t *testing.T) {
+	a := BitmapOf(1)
+	b := BitmapOf(2)
+	bms := []*Bitmap{New(), a, b}
+	result := ParOr(2, bms...)
+	assert.True(t, result.Equals(BitmapOf(1, 2)))
+	assert.True(t, bms[0].IsEmpty())
+	assert.Equal(t, a, bms[1])
+	assert.Equal(t, b, bms[2])
+}

@@ -338,7 +338,9 @@ func ParOr(parallelism int, bitmaps ...*Bitmap) *Bitmap {
 	var lKey uint16 = MaxUint16
 	var hKey uint16
 
-	bitmapsFiltered := bitmaps[:0]
+	// Filter into a fresh slice: compacting into bitmaps[:0] would
+	// overwrite the caller's backing array.
+	bitmapsFiltered := make([]*Bitmap, 0, len(bitmaps))
 	for _, b := range bitmaps {
 		if !b.IsEmpty() {
 			bitmapsFiltered = append(bitmapsFiltered, b)
