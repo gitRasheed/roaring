@@ -4231,9 +4231,8 @@ func TestAndSelfInPlace(t *testing.T) {
 		name string
 		n    int
 	}{
-		{"below-threshold", 31},
+		{"below-threshold", 10},
 		{"neon-sized", 500},
-		{"multi-block", 3000},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

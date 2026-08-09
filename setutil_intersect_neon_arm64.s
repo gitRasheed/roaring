@@ -74,9 +74,8 @@ loop:
 	MATCH8
 	VSUB V3.H8, V2.H8, V2.H8
 
-	// Advance the block with the smaller maximum; both when equal. If set1
-	// runs out first here, pos2 still names the consumed set2 block; the
-	// tail rescan is harmless since set1's tail exceeds that block's max.
+	// If set1 ends on a tie, pos2 retains the consumed set2 block; sorted
+	// tails make rescanning it safe.
 	CMP R11, R9
 	BHI advB
 	BLO advA
@@ -112,8 +111,6 @@ advB:
 	MOVHU 14(R1), R11
 	B loop
 
-// Fast-forward set1 past blocks wholly below set2's block: scalar boundary
-// loads only, one predicted branch per skipped block.
 ffA:
 	ADD $16, R0
 	CMP R3, R0
@@ -156,12 +153,8 @@ done:
 // Materializing variant. Matched set1 lanes are compacted with a
 // mask-indexed TBL and stored. Two store safety conditions (both must
 // hold for a 16-byte store, else an exact 4/2/1 prefix store runs):
-//   out+8 <= cap    -- the buffer may be allocated at exactly
-//                      min(len1,len2) (andArray), never write past it;
-//   out <= pos1     -- iandArray aliases buffer with set1: a retained
-//                      block accumulating matches pushes out past pos1,
-//                      and a wide store would clobber the unloaded next
-//                      set1 block.
+//   out+8 <= cap: andArray may allocate exactly min(len1,len2);
+//   out <= pos1: iandArray aliases buffer with unread set1 data.
 // On exit, if set1's current block was loaded but not fully drained (the
 // loop stopped on set2's side), it is spilled for the Go wrapper: its
 // memory may already hold compacted output in the aliased case.
@@ -191,10 +184,8 @@ TEXT ·intersectKernelNEON(SB), NOSPLIT, $0-120
 	MOVD $0x0101010101010101, R12
 	MOVD $0x0102040810204080, R13
 
-	// The table is the union kernel's uniqshuf, which keeps the lanes NOT
-	// set in its index; point at the last entry and index by subtraction
-	// so uniqshuf[255-mask] keeps exactly the matched lanes, at no cost on
-	// the store chain.
+	// uniqshuf keeps lanes clear in its index; indexing by 255-mask from
+	// the last entry keeps exactly the matched lanes.
 	ADD $4080, R6, R6
 
 	VLD1  (R0), [V0.H8]
@@ -221,14 +212,11 @@ mloop:
 	LSR   $56, R14, R14      // count
 	CBZ   R15, madv
 
-	// compact matched lanes to the front (R6 indexes uniqshuf inverted)
 	SUB  R15<<4, R6, R16
 	VLD1 (R16), [V4.B16]
 	VTBL V4.B16, [V0.B16], V4.B16
 
-	// full store only if out+8 <= cap and out <= pos1 (byte distances
-	// from each slice's own base: exact when buffer aliases set1, safely
-	// conservative when it does not)
+	// A full store must fit the capacity and not overtake unread set1 data.
 	ADD  $16, R2, R16
 	CMP  R7, R16
 	BHI  mprefix
@@ -241,13 +229,9 @@ mloop:
 	B    madv
 
 mprefix:
-	// Exact count store, 4/2/1 halfword groups through GPRs. Count 8 cannot
-	// reach here: 8 new matches imply no earlier matches from this block
-	// (a lane matches at most one set2 value), so out <= pos1, and 8 more
-	// outputs still fit the capacity; both guards then take the full store.
-	// That argument needs strictly increasing inputs, which Validate does
-	// not enforce (adjacent equal values pass): clamp the count to the
-	// remaining capacity so no input can drive a store past cap.
+	// Strictly increasing inputs cannot reach here with count 8 (which the
+	// 4/2/1 groups store as nothing); duplicate-bearing inputs can, so
+	// clamp the count to the remaining capacity.
 	SUB  R2, R7, R16
 	LSR  $1, R16, R16
 	CMP  R16, R14
@@ -272,16 +256,14 @@ madv:
 	CMP R11, R9
 	BHI madvB
 	BLO madvA
-	// equal maxima retire both blocks; advance set2 before either exit so
-	// pos2 never points back into memory the store path may have rewritten
-	// (self-intersection aliases all three slices)
+	// Advance set2 before either exit so pos2 cannot reference memory the
+	// store path rewrote (self-intersection aliases all three slices).
 	ADD $16, R0
 	ADD $16, R1
 	CMP R3, R0
 	BHS mdoneNoSpill
 	CMP R4, R1
-	// the old set1 block is fully consumed and its successor never loaded:
-	// no spill, the successor is part of the (unclobbered) memory tail
+	// The next set1 block was never loaded, so no spill is needed.
 	BHS mdoneNoSpill
 	VLD1  (R0), [V0.H8]
 	MOVHU (R0), R8
@@ -332,9 +314,8 @@ mffB:
 	B mloop
 
 mdoneSpill:
-	// set1's current block is loaded and not fully processed; its memory
-	// may hold compacted output in the aliased case, so hand the register
-	// copy to the Go wrapper and step pos1 past it.
+	// Hand the register copy to the wrapper; the block's memory may
+	// already hold compacted output.
 	MOVD spill+80(FP), R16
 	VST1 [V0.H8], (R16)
 	MOVD $1, R16

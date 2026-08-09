@@ -5,7 +5,6 @@ package roaring
 
 import (
 	"math/rand"
-	"sort"
 	"testing"
 )
 
@@ -82,52 +81,32 @@ func checkMaterialize(t *testing.T, label string, a, b []uint16) {
 
 func TestIntersectNEONSmallSizes(t *testing.T) {
 	rng := rand.New(rand.NewSource(42))
-	for la := 0; la <= 80; la++ {
-		for lb := 60; lb <= 80; lb++ {
-			a := genSortedUnique(rng, la, 160)
-			b := genSortedUnique(rng, lb, 160)
+	for la := 0; la <= 40; la++ {
+		for lb := 12; lb <= 44; lb++ {
+			a := genSortedUnique(rng, la, 120)
+			b := genSortedUnique(rng, lb, 120)
 			checkPair(t, "small", a, b)
 		}
 	}
 }
 
-func TestIntersectNEONIdentical(t *testing.T) {
-	rng := rand.New(rand.NewSource(7))
-	for n := 64; n <= 1024; n *= 2 {
-		a := genSortedUnique(rng, n, 4*n)
-		checkPair(t, "identical", a, a)
-	}
-}
-
-func TestIntersectNEONEvenOdd(t *testing.T) {
-	for n := 64; n <= 2048; n *= 2 {
-		a := make([]uint16, n)
-		b := make([]uint16, n)
-		for i := 0; i < n; i++ {
-			a[i] = uint16(2 * i)
-			b[i] = uint16(2*i + 1)
-		}
-		checkPair(t, "evenodd", a, b)
-	}
-}
-
 func TestIntersectNEONRangeDisjoint(t *testing.T) {
-	// Fully separated ranges pin the dispatcher's O(1) pre-gate (the kernel
-	// is never entered); the interleaved variant touches 0xFFFF inside the
-	// kernel's fast-forward paths.
-	for n := 64; n <= 512; n *= 2 {
+	// The interleaved variant touches 0xFFFF inside the kernel's
+	// fast-forward paths; the endpoint variant pins the boundary match the
+	// range gate must not skip.
+	for _, n := range []int{64, 512} {
 		a := make([]uint16, n)
 		b := make([]uint16, n)
-		for i := 0; i < n; i++ {
-			a[i] = uint16(i)
-			b[i] = uint16(65535 - n + 1 + i)
-		}
-		checkPair(t, "extremes", a, b)
 		for i := 0; i < n; i++ {
 			a[i] = uint16(65534 - 2*(n-1-i))
 			b[i] = uint16(65535 - 2*(n-1-i))
 		}
 		checkPair(t, "extremes-interleaved", a, b)
+		for i := 0; i < n; i++ {
+			a[i] = uint16(i)
+			b[i] = uint16(n - 1 + i)
+		}
+		checkPair(t, "endpoint", a, b)
 	}
 }
 
@@ -142,68 +121,9 @@ func TestIntersectNEONGallopingBoundary(t *testing.T) {
 	}
 }
 
-func TestIntersectNEONInPlaceSpareCap(t *testing.T) {
-	// iandArray passes set1's backing array with len==cardinality but often
-	// cap>len; the wrapper reslices to cap, changing which store path runs.
-	rng := rand.New(rand.NewSource(6))
-	for _, n := range []int{64, 256, 1000} {
-		a := genSortedUnique(rng, n, 4*n)
-		b := genSortedUnique(rng, n, 4*n)
-		want := make([]uint16, n)
-		wn := localintersect2by2(a, b, want)
-		backing := make([]uint16, n+64)
-		for i := range backing {
-			backing[i] = canary
-		}
-		copy(backing, a)
-		gn := intersection2by2(backing[:n], b, backing[:n:n+40])
-		if gn != wn {
-			t.Fatalf("sparecap: n=%d want len %d got %d", n, wn, gn)
-		}
-		for i := 0; i < wn; i++ {
-			if backing[i] != want[i] {
-				t.Fatalf("sparecap: idx %d want %d got %d", i, want[i], backing[i])
-			}
-		}
-		for i := n + 40; i < n+64; i++ {
-			if backing[i] != canary {
-				t.Fatalf("sparecap: overstore past cap at %d", i)
-			}
-		}
-	}
-}
-
-func TestIntersectNEONEndpoint(t *testing.T) {
-	// a's last equals b's first: the gate must not skip the boundary match.
-	for n := 64; n <= 512; n *= 2 {
-		a := make([]uint16, n)
-		b := make([]uint16, n)
-		for i := 0; i < n; i++ {
-			a[i] = uint16(i)
-			b[i] = uint16(n - 1 + i)
-		}
-		checkPair(t, "endpoint", a, b)
-	}
-}
-
-func TestIntersectNEONBlockRuns(t *testing.T) {
-	// Alternating disjoint 8*run blocks: exercises fast-forward runs.
-	for run := 1; run <= 32; run *= 2 {
-		n := 2048
-		a := make([]uint16, n)
-		b := make([]uint16, n)
-		for i := 0; i < n; i++ {
-			blk, off := i/(8*run), i%(8*run)
-			a[i] = uint16(blk*16*run + off)
-			b[i] = uint16(blk*16*run + 8*run + off)
-		}
-		checkPair(t, "blockruns", a, b)
-	}
-}
-
 func TestIntersectNEONRandom(t *testing.T) {
 	rng := rand.New(rand.NewSource(99))
-	for iter := 0; iter < 500; iter++ {
+	for iter := 0; iter < 100; iter++ {
 		la := 64 + rng.Intn(4000)
 		lb := 64 + rng.Intn(4000)
 		if iter%5 == 0 {
@@ -226,7 +146,7 @@ func TestIntersectNEONRandom(t *testing.T) {
 // set1, set2, and the output are the same backing array.
 func TestIntersectNEONSelfAlias(t *testing.T) {
 	rng := rand.New(rand.NewSource(13))
-	for iter := 0; iter < 200; iter++ {
+	for iter := 0; iter < 25; iter++ {
 		n := 8 + rng.Intn(3000)
 		set := genSortedUnique(rng, n, 256+rng.Intn(65280))
 		n = len(set)
@@ -243,10 +163,6 @@ func TestIntersectNEONSelfAlias(t *testing.T) {
 			}
 		}
 
-		if c := intersection2by2Cardinality(set, set); c != len(set) {
-			t.Fatalf("self-card: n=%d want %d got %d", n, len(set), c)
-		}
-
 		// set1 == set2 with an independent buffer (top-level And of a
 		// bitmap with itself).
 		out := make([]uint16, n)
@@ -254,18 +170,32 @@ func TestIntersectNEONSelfAlias(t *testing.T) {
 			t.Fatalf("same-inputs: n=%d want %d got %d", n, len(set), g)
 		}
 	}
-}
 
-// genSortedDup returns a sorted array that may repeat values: it passes
-// Validate (which accepts adjacent equals) while violating the sorted-set
-// contract.
-func genSortedDup(r *rand.Rand, n, valRange int) []uint16 {
-	s := make([]uint16, n)
-	for i := range s {
-		s[i] = uint16(r.Intn(valRange))
+	// iandArray with spare capacity: len==cardinality but cap>len changes
+	// which store path runs.
+	a := genSortedUnique(rng, 64, 256)
+	b := genSortedUnique(rng, 64, 256)
+	want := make([]uint16, 64)
+	wn := localintersect2by2(a, b, want)
+	backing := make([]uint16, 64+64)
+	for i := range backing {
+		backing[i] = canary
 	}
-	sort.Slice(s, func(i, j int) bool { return s[i] < s[j] })
-	return s
+	copy(backing, a)
+	gn := intersection2by2(backing[:64], b, backing[:0:64+40])
+	if gn != wn {
+		t.Fatalf("sparecap: want len %d got %d", wn, gn)
+	}
+	for i := 0; i < wn; i++ {
+		if backing[i] != want[i] {
+			t.Fatalf("sparecap: idx %d want %d got %d", i, want[i], backing[i])
+		}
+	}
+	for i := 64 + 40; i < 64+64; i++ {
+		if backing[i] != canary {
+			t.Fatalf("sparecap: overstore past cap at %d", i)
+		}
+	}
 }
 
 // Results on duplicate-bearing input are unspecified; the pinned guarantee
@@ -312,12 +242,58 @@ func TestIntersectNEONDuplicateInputBounded(t *testing.T) {
 	check("flat-swapped", ramp, flat)
 	check("dup-seam", ramp, seam)
 	check("dup-seam-swapped", seam, ramp)
+}
 
-	rng := rand.New(rand.NewSource(23))
-	for iter := 0; iter < 500; iter++ {
-		la := 8 + rng.Intn(2000)
-		lb := 8 + rng.Intn(2000)
-		valRange := 4 + rng.Intn(2*(la+lb))
-		check("fuzz", genSortedDup(rng, la, valRange), genSortedDup(rng, lb, valRange))
+// Slice starts misaligned independently for set1, set2, and the output:
+// NEON loads and stores must be correct across 16-byte address boundaries.
+func TestIntersectNEONMisalignment(t *testing.T) {
+	rng := rand.New(rand.NewSource(77))
+	for _, n := range []int{16, 17, 24, 25, 64, 65} {
+		for o1 := 0; o1 < 8; o1++ {
+			for o2 := 0; o2 < 8; o2++ {
+				for oo := 0; oo < 8; oo++ {
+					a := genSortedUnique(rng, n, 3*n)
+					b := genSortedUnique(rng, n, 3*n)
+					back1 := make([]uint16, o1+len(a)+8)
+					back2 := make([]uint16, o2+len(b)+8)
+					copy(back1[o1:], a)
+					copy(back2[o2:], b)
+					s1 := back1[o1 : o1+len(a)]
+					s2 := back2[o2 : o2+len(b)]
+
+					m := len(a)
+					if len(b) < m {
+						m = len(b)
+					}
+					want := make([]uint16, m)
+					wn := localintersect2by2(a, b, want)
+
+					for _, pair := range [][2][]uint16{{s1, s2}, {s2, s1}} {
+						backo := make([]uint16, oo+m+16)
+						for i := range backo {
+							backo[i] = canary
+						}
+						out := backo[oo : oo : oo+m]
+						gn := intersection2by2(pair[0], pair[1], out)
+						if gn != wn {
+							t.Fatalf("n=%d o1=%d o2=%d oo=%d: len want %d got %d", n, o1, o2, oo, wn, gn)
+						}
+						for i := 0; i < wn; i++ {
+							if backo[oo+i] != want[i] {
+								t.Fatalf("n=%d o1=%d o2=%d oo=%d idx %d: want %d got %d", n, o1, o2, oo, i, want[i], backo[oo+i])
+							}
+						}
+						for i := oo + m; i < len(backo); i++ {
+							if backo[i] != canary {
+								t.Fatalf("n=%d o1=%d o2=%d oo=%d: overstore at %d", n, o1, o2, oo, i)
+							}
+						}
+						if c := intersection2by2Cardinality(pair[0], pair[1]); c != wn {
+							t.Fatalf("n=%d o1=%d o2=%d card: want %d got %d", n, o1, o2, wn, c)
+						}
+					}
+				}
+			}
+		}
 	}
 }

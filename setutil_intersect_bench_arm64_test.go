@@ -6,30 +6,17 @@ package roaring
 import (
 	"fmt"
 	"math/rand"
+	"sort"
 	"testing"
 )
+
+const intersectBenchVariants = 8
 
 func benchIntersectPair(shape string, n int, seed int64) (a, b []uint16) {
 	r := rand.New(rand.NewSource(int64(42+n) + seed*7919))
 	switch shape {
-	case "dense50", "sparse6":
+	case "dense50":
 		return benchPairSeed(shape, n, seed)
-	case "runs": // alternating disjoint runs; length and ownership rotate
-		// per variant so the shape stays honest under branch prediction
-		run := 8 + 8*r.Intn(4)
-		swap := r.Intn(2) == 1
-		a = make([]uint16, n)
-		b = make([]uint16, n)
-		for i := 0; i < n; i++ {
-			blk, off := i/run, i%run
-			av := uint16(blk*2*run + off)
-			bv := uint16(blk*2*run + run + off)
-			if swap {
-				av, bv = bv, av
-			}
-			a[i], b[i] = av, bv
-		}
-		return a, b
 	case "coinflip": // disjoint 8-blocks, ownership shuffled: zero matches,
 		// skip direction unpredictable for the full length of both sides
 		nb := (n + 7) / 8
@@ -65,48 +52,32 @@ func benchIntersectPair(shape string, n int, seed int64) (a, b []uint16) {
 		for i := 10; i < n; i += 20 {
 			b[i] ^= 1
 		}
-		seen := make(map[uint16]bool, n)
+		sort.Slice(b, func(i, j int) bool { return b[i] < b[j] })
 		out := b[:0]
-		for _, v := range b {
-			if !seen[v] {
-				seen[v] = true
+		for i, v := range b {
+			if i == 0 || v != b[i-1] {
 				out = append(out, v)
 			}
 		}
-		b = out
-		sortNeeded := false
-		for i := 1; i < len(b); i++ {
-			if b[i] < b[i-1] {
-				sortNeeded = true
-				break
-			}
-		}
-		if sortNeeded {
-			for i := 1; i < len(b); i++ {
-				for j := i; j > 0 && b[j] < b[j-1]; j-- {
-					b[j], b[j-1] = b[j-1], b[j]
-				}
-			}
-		}
-		return a, b
+		return a, out
 	}
 	panic("unknown shape")
 }
 
-var benchIntersectShapes = []string{"dense50", "sparse6", "runs", "coinflip", "skew8", "overlap95"}
-var benchIntersectSizes = []int{8, 16, 24, 32, 64, 128, 256, 512, 1001, 4096}
+var benchIntersectShapes = []string{"dense50", "coinflip", "skew8", "overlap95"}
+var benchIntersectSizes = []int{8, 16, 24, 64, 256, 4096}
 
 func BenchmarkIntersect2By2(b *testing.B) {
 	for _, shape := range benchIntersectShapes {
 		for _, n := range benchIntersectSizes {
-			as := make([][]uint16, benchVariants)
-			bs := make([][]uint16, benchVariants)
-			for v := 0; v < benchVariants; v++ {
+			as := make([][]uint16, intersectBenchVariants)
+			bs := make([][]uint16, intersectBenchVariants)
+			for v := 0; v < intersectBenchVariants; v++ {
 				as[v], bs[v] = benchIntersectPair(shape, n, int64(v))
 			}
 			// andArray allocates exactly min(len1,len2); mirror that cap.
-			mins := make([]int, benchVariants)
-			for v := 0; v < benchVariants; v++ {
+			mins := make([]int, intersectBenchVariants)
+			for v := 0; v < intersectBenchVariants; v++ {
 				mins[v] = len(as[v])
 				if len(bs[v]) < mins[v] {
 					mins[v] = len(bs[v])
@@ -124,7 +95,7 @@ func BenchmarkIntersect2By2(b *testing.B) {
 				b.Run(fmt.Sprintf("%s/%d/%s", shape, n, impl.name), func(b *testing.B) {
 					sink := 0
 					for i := 0; i < b.N; i++ {
-						v := i % benchVariants
+						v := i % intersectBenchVariants
 						sink += impl.fn(as[v], bs[v], buffer[:0:mins[v]])
 					}
 					_ = sink
@@ -133,6 +104,9 @@ func BenchmarkIntersect2By2(b *testing.B) {
 			// In-place rows model iandArray: output aliases set1, so each
 			// iteration pays one copy to restore the input; both rows pay
 			// it, keeping the ratio honest.
+			if shape != "dense50" || (n != 16 && n != 4096) {
+				continue
+			}
 			for _, impl := range []struct {
 				name string
 				fn   func([]uint16, []uint16, []uint16) int
@@ -143,7 +117,7 @@ func BenchmarkIntersect2By2(b *testing.B) {
 				b.Run(fmt.Sprintf("%s/%d/%s", shape, n, impl.name), func(b *testing.B) {
 					sink := 0
 					for i := 0; i < b.N; i++ {
-						v := i % benchVariants
+						v := i % intersectBenchVariants
 						m := copy(scratch, as[v])
 						sink += impl.fn(scratch[:m], bs[v], scratch[:0:m])
 					}
@@ -157,9 +131,9 @@ func BenchmarkIntersect2By2(b *testing.B) {
 func BenchmarkIntersectCard2By2(b *testing.B) {
 	for _, shape := range benchIntersectShapes {
 		for _, n := range benchIntersectSizes {
-			as := make([][]uint16, benchVariants)
-			bs := make([][]uint16, benchVariants)
-			for v := 0; v < benchVariants; v++ {
+			as := make([][]uint16, intersectBenchVariants)
+			bs := make([][]uint16, intersectBenchVariants)
+			for v := 0; v < intersectBenchVariants; v++ {
 				as[v], bs[v] = benchIntersectPair(shape, n, int64(v))
 			}
 			for _, impl := range []struct {
@@ -172,7 +146,7 @@ func BenchmarkIntersectCard2By2(b *testing.B) {
 				b.Run(fmt.Sprintf("%s/%d/%s", shape, n, impl.name), func(b *testing.B) {
 					sink := 0
 					for i := 0; i < b.N; i++ {
-						v := i % benchVariants
+						v := i % intersectBenchVariants
 						sink += impl.fn(as[v], bs[v])
 					}
 					_ = sink
