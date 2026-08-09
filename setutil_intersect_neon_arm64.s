@@ -74,8 +74,7 @@ loop:
 	MATCH8
 	VSUB V3.H8, V2.H8, V2.H8
 
-	// If set1 ends on a tie, pos2 retains the consumed set2 block; sorted
-	// tails make rescanning it safe.
+	// A tie exit may retain a consumed set2 block; rescanning it is safe.
 	CMP R11, R9
 	BHI advB
 	BLO advA
@@ -229,9 +228,7 @@ mloop:
 	B    madv
 
 mprefix:
-	// Strictly increasing inputs cannot reach here with count 8 (which the
-	// 4/2/1 groups store as nothing); duplicate-bearing inputs can, so
-	// clamp the count to the remaining capacity.
+	// Count 8 stores nothing; duplicate inputs can land here, so clamp.
 	SUB  R2, R7, R16
 	LSR  $1, R16, R16
 	CMP  R16, R14
@@ -256,8 +253,7 @@ madv:
 	CMP R11, R9
 	BHI madvB
 	BLO madvA
-	// Advance set2 before either exit so pos2 cannot reference memory the
-	// store path rewrote (self-intersection aliases all three slices).
+	// Advance set2 first so pos2 never points at rewritten memory.
 	ADD $16, R0
 	ADD $16, R1
 	CMP R3, R0
@@ -314,8 +310,7 @@ mffB:
 	B mloop
 
 mdoneSpill:
-	// Hand the register copy to the wrapper; the block's memory may
-	// already hold compacted output.
+	// Hand back the register copy; the block's memory may hold output.
 	MOVD spill+80(FP), R16
 	VST1 [V0.H8], (R16)
 	MOVD $1, R16

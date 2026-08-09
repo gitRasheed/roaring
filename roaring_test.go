@@ -4224,8 +4224,7 @@ func TestOrSelfInPlace(t *testing.T) {
 	}
 }
 
-// Self-intersection must leave the bitmap unchanged. iandArray passes the
-// container's own array as both inputs and the output.
+// iandArray passes the container's array as both inputs and the output.
 func TestAndSelfInPlace(t *testing.T) {
 	cases := []struct {
 		name string

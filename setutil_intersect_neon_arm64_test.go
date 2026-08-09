@@ -25,10 +25,8 @@ func checkPair(t *testing.T, label string, a, b []uint16) {
 
 const canary = 0xABAB
 
-// checkMaterialize runs intersection2by2 against the scalar reference under
-// the two shipping buffer contracts: an exact min(la,lb)-capacity buffer
-// with canaries beyond it (andArray), and a buffer aliasing set1 in place
-// (iandArray).
+// checkMaterialize checks both shipping buffer contracts: exact capacity
+// with canaries (andArray) and a buffer aliasing set1 in place (iandArray).
 func checkMaterialize(t *testing.T, label string, a, b []uint16) {
 	t.Helper()
 	m := len(a)
@@ -91,9 +89,7 @@ func TestIntersectNEONSmallSizes(t *testing.T) {
 }
 
 func TestIntersectNEONRangeDisjoint(t *testing.T) {
-	// The interleaved variant touches 0xFFFF inside the kernel's
-	// fast-forward paths; the endpoint variant pins the boundary match the
-	// range gate must not skip.
+	// Interleaved 0xFFFF fast-forward, and the boundary match at endpoints.
 	for _, n := range []int{64, 512} {
 		a := make([]uint16, n)
 		b := make([]uint16, n)
@@ -111,8 +107,7 @@ func TestIntersectNEONRangeDisjoint(t *testing.T) {
 }
 
 func TestIntersectNEONGallopingBoundary(t *testing.T) {
-	// 32x2048 stays on the kernel; 32x2049 crosses the 64:1 cutoff into
-	// galloping. Pin both, both orientations.
+	// 32x2048 stays on the kernel; 32x2049 crosses into galloping.
 	rng := rand.New(rand.NewSource(5))
 	small := genSortedUnique(rng, 32, 65536)
 	for _, large := range []int{2048, 2049} {
@@ -142,8 +137,7 @@ func TestIntersectNEONRandom(t *testing.T) {
 	}
 }
 
-// iandArray's self-intersection geometry (And of a bitmap with itself):
-// set1, set2, and the output are the same backing array.
+// And of a bitmap with itself: set1, set2, and the output are one array.
 func TestIntersectNEONSelfAlias(t *testing.T) {
 	rng := rand.New(rand.NewSource(13))
 	for iter := 0; iter < 25; iter++ {
@@ -163,16 +157,14 @@ func TestIntersectNEONSelfAlias(t *testing.T) {
 			}
 		}
 
-		// set1 == set2 with an independent buffer (top-level And of a
-		// bitmap with itself).
+		// set1 == set2 with an independent buffer.
 		out := make([]uint16, n)
 		if g := intersection2by2(set, set, out[:0:n]); g != len(set) {
 			t.Fatalf("same-inputs: n=%d want %d got %d", n, len(set), g)
 		}
 	}
 
-	// iandArray with spare capacity: len==cardinality but cap>len changes
-	// which store path runs.
+	// Spare capacity (cap>len) selects a different store path.
 	a := genSortedUnique(rng, 64, 256)
 	b := genSortedUnique(rng, 64, 256)
 	want := make([]uint16, 64)
@@ -198,8 +190,7 @@ func TestIntersectNEONSelfAlias(t *testing.T) {
 	}
 }
 
-// Results on duplicate-bearing input are unspecified; the pinned guarantee
-// is that no store escapes the buffer's capacity.
+// Duplicate-bearing input: results unspecified, stores must stay in cap.
 func TestIntersectNEONDuplicateInputBounded(t *testing.T) {
 	check := func(label string, a, b []uint16) {
 		t.Helper()
@@ -212,8 +203,7 @@ func TestIntersectNEONDuplicateInputBounded(t *testing.T) {
 			backing[i] = canary
 		}
 		func() {
-			// Unspecified results may surface as slice-bounds panics in
-			// the scalar tail; only out-of-bounds stores are failures.
+			// Panics are tolerated; only out-of-bounds stores fail.
 			defer func() { _ = recover() }()
 			intersection2by2(a, b, backing[0:0:m])
 			intersection2by2Cardinality(a, b)
@@ -243,8 +233,7 @@ func TestIntersectNEONDuplicateInputBounded(t *testing.T) {
 	check("dup-seam", ramp, seam)
 	check("dup-seam-swapped", seam, ramp)
 
-	// Witnesses that drive the prefix store to the capacity edge: without
-	// the kernel's store clamp these corrupt the canaries.
+	// Without the kernel's store clamp these corrupt the canaries.
 	wa := []uint16{100, 100, 100, 100, 101, 101, 101, 101, 101, 101, 102, 102, 102, 102, 103, 103}
 	wb := []uint16{100, 101, 101, 101, 101, 101, 102, 102, 102, 102, 102, 102, 102, 102, 102, 102}
 	check("clamp-witness", wa, wb)
@@ -259,8 +248,7 @@ func TestIntersectNEONDuplicateInputBounded(t *testing.T) {
 	check("clamp-spill-swapped", deep, tall)
 }
 
-// Slice starts misaligned independently for set1, set2, and the output:
-// NEON loads and stores must be correct across 16-byte address boundaries.
+// Independently misaligned slice starts for set1, set2, and the output.
 func TestIntersectNEONMisalignment(t *testing.T) {
 	rng := rand.New(rand.NewSource(77))
 	for _, n := range []int{16, 17, 24, 25, 64, 65} {

@@ -17,8 +17,7 @@ func benchIntersectPair(shape string, n int, seed int64) (a, b []uint16) {
 	switch shape {
 	case "dense50":
 		return benchPairSeed(shape, n, seed)
-	case "coinflip": // disjoint 8-blocks, ownership shuffled: zero matches,
-		// skip direction unpredictable for the full length of both sides
+	case "coinflip": // disjoint 8-blocks, shuffled ownership: zero matches
 		nb := (n + 7) / 8
 		own := make([]bool, 2*nb)
 		for i := 0; i < nb; i++ {
@@ -39,8 +38,7 @@ func benchIntersectPair(shape string, n int, seed int64) (a, b []uint16) {
 			base += 8
 		}
 		return a[:n], b[:n]
-	case "skew8": // one side 8x longer, same value range: stays below the
-		// 64:1 galloping cutoff, exercises the fast-forward paths
+	case "skew8": // one side 8x longer, below the 64:1 galloping cutoff
 		big := 8 * n
 		if big > 32768 {
 			big = 32768
@@ -101,9 +99,7 @@ func BenchmarkIntersect2By2(b *testing.B) {
 					_ = sink
 				})
 			}
-			// In-place rows model iandArray: output aliases set1, so each
-			// iteration pays one copy to restore the input; both rows pay
-			// it, keeping the ratio honest.
+			// iandArray geometry; both rows pay the same restore copy.
 			if shape != "dense50" || (n != 16 && n != 4096) {
 				continue
 			}

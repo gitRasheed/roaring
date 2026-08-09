@@ -10,8 +10,7 @@ func intersectCardKernelNEON(set1, set2 []uint16) (card, pos1, pos2 int)
 func intersectKernelNEON(set1, set2, buffer []uint16, shuf *byte, spill *[8]uint16) (outLen, pos1, pos2, spilled int)
 
 // Below this the kernel setup usually loses to the scalar path.
-// Duplicate values pass Validate but get unspecified results; stores stay
-// within the buffer's capacity.
+// Duplicate values get unspecified results; stores stay within capacity.
 const (
 	neonIntersectCardThreshold = 16
 	neonIntersectThreshold     = 16
@@ -33,14 +32,12 @@ func intersection2by2(
 	if set1[len(set1)-1] < set2[0] || set2[len(set2)-1] < set1[0] {
 		return 0
 	}
-	// andArray may pass a zero-length buffer; copy-on-write cloning keeps
-	// iandArray's spare capacity private.
+	// andArray passes len 0; COW cloning keeps iandArray's spare cap private.
 	buffer = buffer[:cap(buffer)]
 	var spill [8]uint16
 	outLen, pos1, pos2, spilled := intersectKernelNEON(set1, set2, buffer, &uniqshuf[0], &spill)
 	if spilled != 0 {
-		// set1 may alias buffer, so the retained block is drained from
-		// this copy, never reread.
+		// set1 may alias buffer: drain from this copy, never reread.
 		i := 0
 		for i < 8 && pos2 < len(set2) {
 			switch {
@@ -75,7 +72,6 @@ func intersection2by2Cardinality(
 		return 0
 	}
 	card, pos1, pos2 := intersectCardKernelNEON(set1, set2)
-	// The tails were never compared against each other; sorted unique
-	// inputs make the scalar completion double-count free.
+	// The tails were never compared; sorted sets keep the completion exact.
 	return card + localintersect2by2Cardinality(set1[pos1:], set2[pos2:])
 }
