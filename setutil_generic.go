@@ -31,6 +31,10 @@ func intersection2by2Cardinality(
 	}
 }
 
+func difference(set1 []uint16, set2 []uint16, buffer []uint16) int {
+	return localdifference(set1, set2, buffer)
+}
+
 func union2by2(set1 []uint16, set2 []uint16, buffer []uint16) int {
 	pos := 0
 	k1 := 0
