@@ -9,6 +9,9 @@ func union2by2scalar(set1 []uint16, set2 []uint16, buffer []uint16) (size int)
 //go:noescape
 func unionKernelNEON(set1, set2, buffer []uint16, shuf *byte, leftover *[16]uint16) (outLen, pos1, pos2, leftoverLen int)
 
+//go:noescape
+func unionPartKernelNEON(set1, set2, buffer []uint16, shuf *byte) (outLen, pos1, pos2 int)
+
 // uniqshuf[m] is the TBL index vector that compacts the lanes not set in
 // mask m to the front. A variable initializer, not init(): package-level
 // initializers in other files run first and would read a zero table.
@@ -35,11 +38,33 @@ func buildUniqshuf() (t [256 * 16]byte) {
 // Below this the kernel's setup cost usually loses to the scalar merge.
 const neonUnionThreshold = 256
 
+// The partition kernel stops 48 elements short of the last whole block in
+// each input, so it needs a window plus that reserve to run at all.
+const neonPartMin = 80
+
 func union2by2(set1 []uint16, set2 []uint16, buffer []uint16) int {
 	if len(set1) < neonUnionThreshold || len(set2) < neonUnionThreshold {
 		return union2by2scalar(set1, set2, buffer)
 	}
-	return unionNEON(set1, set2, buffer)
+	return unionNEONPart(set1, set2, buffer)
+}
+
+func unionNEONPart(set1 []uint16, set2 []uint16, buffer []uint16) int {
+	// Callers such as lazyorArray pass a zero-length buffer with capacity.
+	buffer = buffer[:cap(buffer)]
+	if len(set1) < neonPartMin || len(set2) < neonPartMin {
+		return union2by2scalar(set1, set2, buffer)
+	}
+	// iorArray's in-place self-union passes set2 and buffer sharing a
+	// backing array from offset 0; the kernel's stores run ahead of the
+	// set2 reads there.
+	if &buffer[0] == &set2[0] {
+		return union2by2scalar(set1, set2, buffer)
+	}
+	outLen, pos1, pos2 := unionPartKernelNEON(set1, set2, buffer, &uniqshuf[0])
+	// Everything left in either input is strictly greater than the last
+	// emitted value, so the tails need no seam check.
+	return outLen + union2by2scalar(set1[pos1:], set2[pos2:], buffer[outLen:])
 }
 
 // unionNEON requires at least 8 elements in each input.
