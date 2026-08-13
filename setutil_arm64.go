@@ -35,11 +35,15 @@ func buildUniqshuf() (t [256 * 16]byte) {
 	return t
 }
 
-// Below this the kernel's setup cost usually loses to the scalar merge.
-const neonUnionThreshold = 256
+// Measured dispatch cutoff, not a structural limit: from 80 up the
+// partition kernel wins the corpus-weighted shape mix on both measured
+// cores. Regular high-overlap inputs stay up to ~13% behind the scalar
+// merge in the 80-160 band before evening out.
+const neonUnionThreshold = neonPartMin
 
 // The partition kernel stops 48 elements short of the last whole block in
-// each input, so it needs a window plus that reserve to run at all.
+// each input, so its loop first runs at 56 aligned elements; 80 keeps a
+// margin above that and matches the dispatch cutoff.
 const neonPartMin = 80
 
 func union2by2(set1 []uint16, set2 []uint16, buffer []uint16) int {
@@ -57,7 +61,9 @@ func unionNEONPart(set1 []uint16, set2 []uint16, buffer []uint16) int {
 	}
 	// iorArray's in-place self-union passes set2 and buffer sharing a
 	// backing array from offset 0; the kernel's stores run ahead of the
-	// set2 reads there.
+	// set2 reads there. The scalar fallback is safe only for that caller
+	// geometry (set1 an identical copy of set2), not for arbitrary
+	// buffers that alias set2.
 	if &buffer[0] == &set2[0] {
 		return union2by2scalar(set1, set2, buffer)
 	}
