@@ -158,7 +158,7 @@ func xrCut(T int, dupCut bool) ([]uint16, []uint16) {
 	return a, b
 }
 
-// Every reachable T; a unique cutoff leaves a singleton right before the invalid lanes.
+// T from 16 (a whole-window copy) to 32; a unique cutoff leaves a singleton right before the invalid lanes.
 func TestXorNEONCutoff(t *testing.T) {
 	for T := 16; T <= 32; T++ {
 		if T <= 31 {
