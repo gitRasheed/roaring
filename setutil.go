@@ -1,6 +1,6 @@
 package roaring
 
-func difference(set1 []uint16, set2 []uint16, buffer []uint16) int {
+func localdifference(set1 []uint16, set2 []uint16, buffer []uint16) int {
 	if len(set2) == 0 {
 		buffer = buffer[:len(set1)]
 		copy(buffer, set1)
