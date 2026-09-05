@@ -26,4 +26,24 @@ func buildUniqshuf() (t [256 * 16]byte) {
 }
 
 //go:noescape
-func union2by2(set1 []uint16, set2 []uint16, buffer []uint16) (size int)
+func union2by2scalar(set1 []uint16, set2 []uint16, buffer []uint16) (size int)
+
+//go:noescape
+func unionPartKernelNEON(set1, set2, buffer []uint16, shuf *byte) (outLen, pos1, pos2 int)
+
+func union2by2(set1 []uint16, set2 []uint16, buffer []uint16) int {
+	// Small balanced inputs favor scalar; unequal inputs need enough total work.
+	if len(set1) < 32 || len(set2) < 32 || len(set1)+len(set2) < 128 {
+		return union2by2scalar(set1, set2, buffer)
+	}
+	// lazyorArray passes a zero-length buffer with capacity.
+	buffer = buffer[:cap(buffer)]
+	// In-place self-union aliases set2 at the output base, with set1 an
+	// identical copy. Scalar reads stay ahead of writes in this geometry.
+	if &buffer[0] == &set2[0] {
+		return union2by2scalar(set1, set2, buffer)
+	}
+	outLen, pos1, pos2 := unionPartKernelNEON(set1, set2, buffer, &uniqshuf[0])
+	// The remaining values are strictly greater than the last emitted value.
+	return outLen + union2by2scalar(set1[pos1:], set2[pos2:], buffer[outLen:])
+}
