@@ -394,47 +394,6 @@ func TestIntersectNEONRetainedBlockTail(t *testing.T) {
 	checkPair(t, "bounded-tail-store", c, d)
 }
 
-// Duplicate arrays pass Validate; And after a marshal round trip must not panic.
-func TestIntersectNEONDuplicateRoundtrip(t *testing.T) {
-	dupBitmap := func(vals []uint16) *Bitmap {
-		bm := New()
-		bm.highlowcontainer.appendContainer(0, &arrayContainer{content: vals}, false)
-		return bm
-	}
-	a := dupBitmap([]uint16{0, 1, 1, 1, 2, 3, 4, 5, 6, 7, 7, 7, 9, 9, 10, 10, 12})
-	b := dupBitmap([]uint16{0, 1, 3, 4, 4, 4, 5, 7, 7, 9, 10, 10, 12, 13, 13, 15})
-	for _, bm := range []*Bitmap{a, b} {
-		if err := bm.Validate(); err != nil {
-			t.Fatalf("duplicate bitmap failed Validate: %v", err)
-		}
-	}
-	for _, pair := range [][2]*Bitmap{{a, b}, {b, a}} {
-		data, err := pair[0].MarshalBinary()
-		if err != nil {
-			t.Fatalf("marshal: %v", err)
-		}
-		got := New()
-		if err := got.UnmarshalBinary(data); err != nil {
-			t.Fatalf("unmarshal: %v", err)
-		}
-		out := And(got, pair[1])
-		if c := out.GetCardinality(); c > 16 {
-			t.Fatalf("And cardinality %d exceeds smaller input size", c)
-		}
-		if !out.IsEmpty() {
-			if err := out.Validate(); err != nil {
-				t.Fatalf("And result fails Validate: %v", err)
-			}
-		}
-		got.And(pair[1]) // in-place geometry
-		if !got.IsEmpty() {
-			if err := got.Validate(); err != nil {
-				t.Fatalf("in-place And result fails Validate: %v", err)
-			}
-		}
-	}
-}
-
 // genSortedDup emits a sorted array where runs of equal values are common.
 func genSortedDup(r *rand.Rand, n int) []uint16 {
 	out := make([]uint16, n)

@@ -358,6 +358,80 @@ func TestArrayContainerIAndNot(t *testing.T) {
 	require.Equal(t, 2, ac.getCardinality())
 }
 
+func TestArrayContainerAndNotRun(t *testing.T) {
+	tests := []struct {
+		name      string
+		content   []uint16
+		intervals []interval16
+		want      []uint16
+	}{
+		{
+			name:    "empty run",
+			content: []uint16{0, 10, MaxUint16},
+			want:    []uint16{0, 10, MaxUint16},
+		},
+		{
+			name:      "empty array",
+			intervals: []interval16{newInterval16Range(0, 0)},
+			want:      []uint16{},
+		},
+		{
+			name:      "single run",
+			content:   []uint16{0, 2, 3, 4, 6, 8, 10},
+			intervals: []interval16{newInterval16Range(3, 8)},
+			want:      []uint16{0, 2, 10},
+		},
+		{
+			name:      "full run",
+			content:   []uint16{0, 2, MaxUint16},
+			intervals: []interval16{newInterval16Range(0, MaxUint16)},
+			want:      []uint16{},
+		},
+		{
+			name:      "run after array",
+			content:   []uint16{1, 3, 5},
+			intervals: []interval16{newInterval16Range(10, 20)},
+			want:      []uint16{1, 3, 5},
+		},
+		{
+			name:      "run before array",
+			content:   []uint16{10, 20, 30},
+			intervals: []interval16{newInterval16Range(0, 5)},
+			want:      []uint16{10, 20, 30},
+		},
+		{
+			name:    "multiple runs",
+			content: []uint16{0, 3, 4, 10, 12, 15, MaxUint16},
+			intervals: []interval16{
+				newInterval16Range(0, 0),
+				newInterval16Range(4, 10),
+				newInterval16Range(MaxUint16, MaxUint16),
+			},
+			want: []uint16{3, 12, 15},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			ac := &arrayContainer{content: append([]uint16(nil), test.content...)}
+			rc := newRunContainer16CopyIv(test.intervals)
+			originalContent := append([]uint16(nil), ac.content...)
+			originalIntervals := make([]interval16, len(rc.iv))
+			copy(originalIntervals, rc.iv)
+
+			got := ac.andNotRun16(rc).(*arrayContainer)
+			assert.Equal(t, test.want, got.content)
+			assert.Equal(t, originalContent, ac.content)
+			assert.Equal(t, originalIntervals, rc.iv)
+			assert.NotSame(t, ac, got)
+			if len(got.content) > 0 {
+				got.content[0]++
+				assert.Equal(t, originalContent, ac.content)
+			}
+		})
+	}
+}
+
 func TestArrayContainerIand(t *testing.T) {
 	a := NewBitmap()
 	a.AddRange(0, 200000)
@@ -628,11 +702,20 @@ func TestArrayContainerValidation(t *testing.T) {
 	array.content[500] = uint16(upperBound + upperBound)
 
 	err = array.validate()
-	assert.Error(t, err)
+	assert.ErrorIs(t, err, ErrArrayIncorrectSort)
 
+	// Adjacent duplicates must be rejected (strictly increasing), matching
+	// CRoaring, Java, and Rust validators (previous >= next).
 	array = newArrayContainer()
+	for i := 0; i < 10; i++ {
+		array.iadd(uint16(i))
+	}
+	array.content[5] = array.content[4]
+	err = array.validate()
+	assert.ErrorIs(t, err, ErrArrayIncorrectSort)
 
-	// Technically a run, but make sure the incorrect sort detection handles equal elements
+	// Repeated iadd of the same value is a no-op; container stays valid.
+	array = newArrayContainer()
 	for i := 0; i < upperBound; i++ {
 		array.iadd(uint16(1))
 	}
