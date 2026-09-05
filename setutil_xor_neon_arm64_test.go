@@ -159,6 +159,7 @@ func xrCut(T int, dupCut bool) ([]uint16, []uint16) {
 }
 
 // T from 16 (a whole-window copy) to 32; a unique cutoff leaves a singleton right before the invalid lanes.
+// Equal window maxima give T = 32 with both cursors advancing a full window.
 func TestXorNEONCutoff(t *testing.T) {
 	for T := 16; T <= 32; T++ {
 		if T <= 31 {
@@ -177,10 +178,6 @@ func TestXorNEONCutoff(t *testing.T) {
 			xrRun(t, fmt.Sprintf("cut%ddup+tail", T), a2, b2, true)
 		}
 	}
-}
-
-// With equal window maxima T is 32 and both cursors advance a full window.
-func TestXorNEONEqualMaxima(t *testing.T) {
 	for k := 1; k <= 16; k++ {
 		a := make([]uint16, 0, 16)
 		b := make([]uint16, 0, 16)
@@ -307,52 +304,72 @@ func xrRuns(r, n int) ([]uint16, []uint16) {
 	return a, b
 }
 
-func TestXorNEONOwnershipRuns(t *testing.T) {
-	for _, r := range []int{4, 7, 8, 9, 15, 16, 17, 32} {
-		for _, n := range []int{16, 33, 64, 129, 256} {
-			a, b := xrRuns(r, n)
-			xrRun(t, fmt.Sprintf("runs%d/%d", r, n), a, b, true)
+// Input shapes through both arms in both orientations: ownership runs, every length pair
+// up to 40, extreme values, and random picks from four universes.
+func TestXorNEONShapes(t *testing.T) {
+	t.Run("runs", func(t *testing.T) {
+		for _, r := range []int{4, 7, 8, 9, 15, 16, 17, 32} {
+			for _, n := range []int{16, 33, 64, 129, 256} {
+				a, b := xrRuns(r, n)
+				xrRun(t, fmt.Sprintf("runs%d/%d", r, n), a, b, true)
+			}
 		}
-	}
-}
-
-func TestXorNEONLengthPairs(t *testing.T) {
-	for la := 0; la <= 40; la++ {
-		for lb := 0; lb <= 40; lb++ {
-			a := xrSeq(0, 2, la)
-			b := xrSeq(0, 3, lb)
-			xrRun(t, fmt.Sprintf("len%dx%d", la, lb), a, b, true)
+	})
+	t.Run("lengths", func(t *testing.T) {
+		for la := 0; la <= 40; la++ {
+			for lb := 0; lb <= 40; lb++ {
+				a := xrSeq(0, 2, la)
+				b := xrSeq(0, 3, lb)
+				xrRun(t, fmt.Sprintf("len%dx%d", la, lb), a, b, true)
+			}
 		}
-	}
-}
+	})
+	t.Run("extremes", func(t *testing.T) {
+		edges := []uint16{0, 1, 0xFFFE, 0xFFFF}
+		mid := xrSeq(1000, 2, 40)
+		for _, e := range edges {
+			a := append([]uint16{e}, mid...)
+			sort.Slice(a, func(i, j int) bool { return a[i] < a[j] })
+			b := append([]uint16(nil), mid...)
+			for i := range b {
+				b[i]++
+			}
+			xrRun(t, fmt.Sprintf("edge%d/one", e), a, b, true)
 
-func TestXorNEONExtremeValues(t *testing.T) {
-	edges := []uint16{0, 1, 0xFFFE, 0xFFFF}
-	mid := xrSeq(1000, 2, 40)
-	for _, e := range edges {
-		a := append([]uint16{e}, mid...)
-		sort.Slice(a, func(i, j int) bool { return a[i] < a[j] })
-		b := append([]uint16(nil), mid...)
-		for i := range b {
-			b[i]++
+			b2 := append([]uint16{e}, b...)
+			sort.Slice(b2, func(i, j int) bool { return b2[i] < b2[j] })
+			xrRun(t, fmt.Sprintf("edge%d/both", e), a, b2, true)
 		}
-		xrRun(t, fmt.Sprintf("edge%d/one", e), a, b, true)
+		a := append([]uint16{0, 1}, xrSeq(0xFFC0, 1, 64)...)
+		b := append([]uint16{0}, xrSeq(0xFFC1, 2, 32)...)
+		xrRun(t, "edge/all", a, b, true)
 
-		b2 := append([]uint16{e}, b...)
-		sort.Slice(b2, func(i, j int) bool { return b2[i] < b2[j] })
-		xrRun(t, fmt.Sprintf("edge%d/both", e), a, b2, true)
-	}
-	a := append([]uint16{0, 1}, xrSeq(0xFFC0, 1, 64)...)
-	b := append([]uint16{0}, xrSeq(0xFFC1, 2, 32)...)
-	xrRun(t, "edge/all", a, b, true)
+		// Singleton cutoff 0xFFFE with 0xFFFF as the invalid lane behind it.
+		xrRun(t, "edge/cutoffFFFE", xrSeq(0xFFE0, 2, 16), xrSeq(0xFFE1, 2, 16), true)
 
-	// Singleton cutoff 0xFFFE with 0xFFFF as the invalid lane behind it.
-	xrRun(t, "edge/cutoffFFFE", xrSeq(0xFFE0, 2, 16), xrSeq(0xFFE1, 2, 16), true)
-
-	// 0xFFFF cancels through the general path, not annihilation.
-	xrRun(t, "edge/sharedFFFF",
-		append(xrSeq(0xFFC0, 2, 15), 0xFFFF),
-		append(xrSeq(0xFFC1, 2, 15), 0xFFFF), true)
+		// 0xFFFF cancels through the general path, not annihilation.
+		xrRun(t, "edge/sharedFFFF",
+			append(xrSeq(0xFFC0, 2, 15), 0xFFFF),
+			append(xrSeq(0xFFC1, 2, 15), 0xFFFF), true)
+	})
+	t.Run("random", func(t *testing.T) {
+		rng := rand.New(rand.NewSource(20260905))
+		universes := []int{64, 512, 4096, 0x10000}
+		for i := 0; i < 5000; i++ {
+			u := universes[i%len(universes)]
+			la := rng.Intn(300)
+			lb := rng.Intn(300)
+			if la > u {
+				la = u
+			}
+			if lb > u {
+				lb = u
+			}
+			a := xrPick(rng, u, la)
+			b := xrPick(rng, u, lb)
+			xrRun(t, fmt.Sprintf("rand%d", i), a, b, true)
+		}
+	})
 }
 
 // Different poison past both inputs must not change the output.
@@ -435,25 +452,6 @@ func xrPick(rng *rand.Rand, universe, n int) []uint16 {
 	return out
 }
 
-func TestXorNEONRandom(t *testing.T) {
-	rng := rand.New(rand.NewSource(20260905))
-	universes := []int{64, 512, 4096, 0x10000}
-	for i := 0; i < 5000; i++ {
-		u := universes[i%len(universes)]
-		la := rng.Intn(300)
-		lb := rng.Intn(300)
-		if la > u {
-			la = u
-		}
-		if lb > u {
-			lb = u
-		}
-		a := xrPick(rng, u, la)
-		b := xrPick(rng, u, lb)
-		xrRun(t, fmt.Sprintf("rand%d", i), a, b, true)
-	}
-}
-
 // Duplicate-bearing inputs get unspecified values but stores stay within capacity.
 func TestXorNEONDuplicateBearing(t *testing.T) {
 	rng := rand.New(rand.NewSource(4242))
@@ -528,7 +526,8 @@ func TestXorNEONKernelExit(t *testing.T) {
 	}
 }
 
-func TestXorNEONDispatchBoundary(t *testing.T) {
+// The kernel is reached only from the array/array path, from the threshold up.
+func TestXorNEONDispatch(t *testing.T) {
 	sizes := []int{neonXorThreshold - 1, neonXorThreshold, neonXorThreshold + 1}
 	for _, la := range sizes {
 		for _, lb := range sizes {
@@ -539,10 +538,7 @@ func TestXorNEONDispatchBoundary(t *testing.T) {
 			xrRun(t, fmt.Sprintf("bound%dx%d/prefix", la, lb), a, b, true)
 		}
 	}
-}
 
-// The kernel is reached only from the array/array path.
-func TestXorNEONContainerDispatch(t *testing.T) {
 	a := New()
 	for i := 0; i < 100; i++ {
 		a.Add(uint32(3 * i))
