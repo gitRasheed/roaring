@@ -196,7 +196,7 @@ func TestAndnotNEONSelfAlias(t *testing.T) {
 	}
 }
 
-// Duplicate-bearing inputs pass Validate: results unspecified, stores bounded.
+// Duplicate-bearing inputs get unspecified values but bounded stores and no panic.
 func TestAndnotNEONDuplicateInputBounded(t *testing.T) {
 	dup := func(vals ...uint16) []uint16 { return vals }
 	cases := [][2][]uint16{
@@ -243,22 +243,76 @@ func TestAndnotNEONDuplicateInputBounded(t *testing.T) {
 	}
 }
 
-// Kernel exits must report exact cursor, spill block and mask state.
-func TestAndnotNEONKernelHandoffs(t *testing.T) {
-	a := []uint16{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15}
-	buffer := make([]uint16, len(a))
-	var spill [8]uint16
-	out, pos1, pos2, spilled, mask := andnotKernelNEON(a, a, buffer, &uniqshuf[0], &spill)
-	if out != 0 || pos1 != 16 || pos2 != 16 || spilled != 0 || mask != 0 {
-		t.Fatalf("tie exit: out=%d pos1=%d pos2=%d spilled=%d mask=%08b", out, pos1, pos2, spilled, mask)
+// Every kernel exit hands back exact cursors, and a spilled block with its
+// match mask when set2 runs out first.
+func TestAndnotNEONKernelExits(t *testing.T) {
+	seq := func(from, n int) []uint16 {
+		s := make([]uint16, n)
+		for i := range s {
+			s[i] = uint16(from + i)
+		}
+		return s
 	}
-
-	sa := []uint16{100, 101, 102, 103, 104, 105, 106, 107, 200, 201, 202, 203, 204, 205, 206, 207}
-	sb := []uint16{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 103}
-	out, pos1, pos2, spilled, mask = andnotKernelNEON(sa, sb, buffer, &uniqshuf[0], &spill)
-	wantSpill := [8]uint16{100, 101, 102, 103, 104, 105, 106, 107}
-	if out != 0 || pos1 != 8 || pos2 != 16 || spilled != 1 || mask != 1<<3 || spill != wantSpill {
-		t.Fatalf("spill: out=%d pos1=%d pos2=%d spilled=%d mask=%08b spill=%v", out, pos1, pos2, spilled, mask, spill)
+	cat := func(parts ...[]uint16) []uint16 {
+		var s []uint16
+		for _, p := range parts {
+			s = append(s, p...)
+		}
+		return s
+	}
+	type exit struct {
+		name                           string
+		a, b                           []uint16
+		out, pos1, pos2, spilled, mask int
+	}
+	cases := []exit{
+		// equal maxima retire both blocks
+		{"tie", seq(0, 16), seq(0, 16), 0, 16, 16, 0, 0},
+		// mask carried across two set2 advances into the fast-forward retire,
+		// then whole-block copies and a fresh block with a clear mask
+		{"ffmask", cat(seq(10, 1), seq(20, 1), seq(30, 1), seq(40, 1), seq(50, 1), seq(60, 1), seq(70, 1), seq(80, 1), seq(90, 16)),
+			cat(seq(0, 7), seq(10, 1), seq(11, 7), seq(20, 1), seq(100, 1), seq(110, 7)), 21, 24, 17, 0, 0},
+		// set1 exhausted while set2 is held: the lane equal to the retired
+		// maximum is consumed, the tail value above it survives
+		{"exiteq", seq(0, 17), cat(seq(0, 8), seq(15, 1), seq(17, 7)), 7, 16, 9, 0, 0},
+		// spill after an earlier block was emitted, same-start alias included
+		{"spillafter", cat(seq(0, 8), seq(100, 8), seq(200, 8)), cat(seq(7, 15), seq(103, 1)), 7, 16, 16, 1, 1 << 3},
+		// all-matched retire, a skipped set2 block, a later block accepted
+		// with two matches, exit skips exactly those two lanes
+		{"reloadexit", cat(seq(0, 8), seq(100, 9)), cat(seq(0, 24), seq(103, 1), seq(107, 7)), 6, 16, 26, 0, 0},
+		// 65535 as the retired maximum through a copy and an equal retire
+		{"top", seq(65520, 16), cat(seq(65496, 8), seq(65528, 8)), 8, 16, 16, 0, 0},
+	}
+	// both set2-exhaustion exits, through the skip and after a match, for
+	// every set2 tail length
+	a := cat(seq(100, 8), seq(200, 8))
+	for tail := 0; tail <= 7; tail++ {
+		cases = append(cases,
+			exit{"ffB", a, cat(seq(0, 16), []uint16{103, 107, 200, 201, 202, 203, 204}[:tail]), 0, 8, 16, 1, 0},
+			exit{"advB", a, cat(seq(0, 15), seq(103, 1), []uint16{107, 200, 201, 202, 203, 204, 205}[:tail]), 0, 8, 16, 1, 1 << 3})
+	}
+	// every reachable skip count on the set1-exhaust exit, every tail length
+	for c := 1; c <= 7; c++ {
+		for tail := 0; tail <= 7; tail++ {
+			cases = append(cases, exit{"exitskip", seq(0, 16+tail), cat(seq(0, 8+c), seq(16, 8-c)), 8 - c, 16, 8 + c, 0, 0})
+		}
+	}
+	for _, c := range cases {
+		checkDifferenceBoth(t, c.name, c.a, c.b)
+		buffer := make([]uint16, len(c.a))
+		var spill [8]uint16
+		out, pos1, pos2, spilled, mask := andnotKernelNEON(c.a, c.b, buffer, &uniqshuf[0], &spill)
+		if out != c.out || pos1 != c.pos1 || pos2 != c.pos2 || spilled != c.spilled || mask != c.mask {
+			t.Fatalf("%s: out=%d pos1=%d pos2=%d spilled=%d mask=%08b, want %d %d %d %d %08b",
+				c.name, out, pos1, pos2, spilled, mask, c.out, c.pos1, c.pos2, c.spilled, c.mask)
+		}
+		if spilled != 0 {
+			for i := 0; i < 8; i++ {
+				if spill[i] != c.a[pos1-8+i] {
+					t.Fatalf("%s: spill %v is not the retained block %v", c.name, spill, c.a[pos1-8:pos1])
+				}
+			}
+		}
 	}
 }
 
