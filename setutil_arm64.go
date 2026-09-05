@@ -35,15 +35,13 @@ func buildUniqshuf() (t [256 * 16]byte) {
 	return t
 }
 
-// Measured dispatch cutoff, not a structural limit: from 64 up the
-// partition kernel wins the corpus-weighted shape mix on the measured
-// cores. Regular high-overlap inputs stay up to ~14% behind the scalar
-// merge in the 64-160 band before evening out.
+// Measured dispatch cutoff, not a structural limit. Partition wins the
+// corpus-weighted mix, though some small, regular inputs favor scalar.
 const neonUnionThreshold = neonPartMin
 
-// The partition kernel stops 48 elements short of the last whole block in
-// each input, so its loop first runs at 56 aligned elements; 64 keeps a
-// margin above that and matches the dispatch cutoff.
+// The partition kernel stops 24 elements short of the last whole block in
+// each input, so its loop first runs at 32 aligned elements; 64 is the
+// measured dispatch cutoff.
 const neonPartMin = 64
 
 func union2by2(set1 []uint16, set2 []uint16, buffer []uint16) int {

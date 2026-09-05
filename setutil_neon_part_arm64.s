@@ -14,17 +14,16 @@
 // cntB. Nothing produced by the merge feeds the next iteration's cursors, so
 // the loop-carried chain is only load -> compare -> count -> advance.
 //
-// The last emitted value is always x itself (x is a lane of one window and
-// is the largest value <= x), which is why the seam carry into the next
-// iteration is the x broadcast, and why clamping lanes to x turns every
-// lane above x into a repeat of its predecessor: the dedup compare then
-// drops the invalid tail of the last two vectors for free.
+// Every iteration consumes all values <= x on both sides, so no duplicate
+// crosses an iteration boundary. The first merged vector holds at most two
+// copies of any value, hence comparing its first lane with its last lane
+// cannot drop the first output.
 //
 // Register use:
 //   R0/R1 byte cursors into set1/set2, R3/R4 their loop end addresses,
 //   R2 output cursor, R5 output base, R6 uniqshuf table,
 //   R12 = 0x0101010101010101, R13 = 0x0102040810204080, R20 = 8.
-//   V0/V1 A window, V2/V3 B window, V4 am, V5 bm, V6 x, V7 seam carry,
+//   V0/V1 A window, V2/V3 B window, V4 am, V5 bm, V6 x,
 //   V16-V19 merged 32, V20-V23 compaction shuffles.
 
 // Sort two 8-element bitonic sequences u,v (as produced by a compare-exchange
@@ -65,24 +64,18 @@
 	CLEAN(V8, V9, V16, V17)            \
 	CLEAN(V10, V11, V18, V19)
 
-// Count the lanes of the 16-element window (v0,v1) that are <= the broadcast
-// max m, then advance byte cursor p. The compare mask of a sorted window is a
-// prefix, so the byte-collapsed pair of doublewords is 2^(8*cnt)-1 in each
-// half and cnt = (128 - clz_lo - clz_hi) >> 3; the byte advance is that
-// shifted one less. Clobbers t0, t1, Ra, Rb, Rc.
-#define COUNTADV(v0, v1, m, t0, t1, Ra, Rb, Rc, p) \
-	VUMIN v0.H8, m.H8, t0.H8   \
-	VCMEQ t0.H8, v0.H8, t0.H8  \
-	VUMIN v1.H8, m.H8, t1.H8   \
-	VCMEQ t1.H8, v1.H8, t1.H8  \
+// Count a 16-lane prefix mask in t0,t1, then advance byte cursor p.
+// UZP1 keeps one byte per predicate; SHRN #4 keeps four bits per
+// predicate in a single doubleword. Thus the byte advance is 32-clz(mask)/2.
+// nt0 is t0's register number for SHRN, which Go's assembler does not expose.
+// Clobbers t0, t1, Ra, Rc.
+#define COUNTADV(t0, t1, Ra, Rc, p, nt0) \
 	VUZP1 t1.B16, t0.B16, t0.B16 \
+	WORD $(0x0f0c8400 | (nt0 << 5) | nt0) \
 	VMOV  t0.D[0], Ra          \
-	VMOV  t0.D[1], Rb          \
 	CLZ   Ra, Ra               \
-	CLZ   Rb, Rb               \
-	ADD   Rb, Ra, Ra           \
 	ADD   $32, p, Rc           \
-	SUB   Ra>>2, Rc, p
+	SUB   Ra>>1, Rc, p
 
 // Build the compaction shuffle sv and kept-lane count Rcnt for cur, whose
 // predecessor lane is lane 7 of prv. Clobbers t, R17, R19, R21.
@@ -110,24 +103,20 @@ TEXT ·unionPartKernelNEON(SB), NOSPLIT, $0-104
 	MOVD shuf+72(FP), R6
 	MOVD R2, R5
 
-	// Stop 48 elements short of each whole-block end: an iteration writes 32
-	// elements from the output cursor while advancing it by at most 32, and
-	// the caller's buffer only guarantees len1+len2. Leaving >= 17 unconsumed
-	// elements per side keeps every store inside that bound.
+	// Stop 24 elements short of each whole-block end. Each iteration leaves
+	// at least 9 elements per side unread; compaction stores extend at most
+	// 8 elements past the output cursor. This also protects unread set1
+	// when iorArray places it at buffer[len(set2):].
 	AND  $~7, R3, R3
-	SUB  $48, R3, R3
+	SUB  $24, R3, R3
 	ADD  R3<<1, R0, R3
 	AND  $~7, R4, R4
-	SUB  $48, R4, R4
+	SUB  $24, R4, R4
 	ADD  R4<<1, R1, R4
 
 	MOVD $0x0101010101010101, R12
 	MOVD $0x0102040810204080, R13
 	MOVD $8, R20
-
-	// Seam carry starts at all ones, which no first output can equal: that
-	// would need all 32 window elements to be 0xFFFF.
-	VCMEQ V0.H8, V0.H8, V7.H8
 
 loop:
 	CMP R3, R0
@@ -163,8 +152,12 @@ loop:
 	VDUP V1.H[7], V4.H8
 	VDUP V3.H[7], V5.H8
 
-	COUNTADV(V0, V1, V5, V8, V9, R8, R9, R10, R0)
-	COUNTADV(V2, V3, V4, V10, V11, R14, R15, R16, R1)
+	WORD $0x6e603ca8 // CMHS V8.8H, V5.8H, V0.8H
+	WORD $0x6e613ca9 // CMHS V9.8H, V5.8H, V1.8H
+	COUNTADV(V8, V9, R8, R10, R0, 8)
+	WORD $0x6e623c8a // CMHS V10.8H, V4.8H, V2.8H
+	WORD $0x6e633c8b // CMHS V11.8H, V4.8H, V3.8H
+	COUNTADV(V10, V11, R14, R16, R1, 10)
 
 	VUMIN V5.H8, V4.H8, V6.H8
 
@@ -176,7 +169,7 @@ loop:
 	VUMIN V6.H8, V18.H8, V18.H8
 	VUMIN V6.H8, V19.H8, V19.H8
 
-	PREP(V16, V7, V8, V20, R22)
+	PREP(V16, V16, V8, V20, R22)
 	PREP(V17, V16, V9, V21, R23)
 	PREP(V18, V17, V10, V22, R24)
 	PREP(V19, V18, V11, V23, R25)
@@ -194,13 +187,11 @@ loop:
 	VST1 [V15.B16], (R2)
 	ADD  R25<<1, R2, R2
 
-	VORR V6.B16, V6.B16, V7.B16
 	B    loop
 
 fast1:
 	VLD1 (R0), [V0.H8, V1.H8]
 	VST1 [V0.H8, V1.H8], (R2)
-	VDUP V1.H[7], V7.H8
 	ADD  $32, R0, R0
 	ADD  $32, R2, R2
 	B    loop
@@ -208,7 +199,6 @@ fast1:
 fast2:
 	VLD1 (R1), [V2.H8, V3.H8]
 	VST1 [V2.H8, V3.H8], (R2)
-	VDUP V3.H[7], V7.H8
 	ADD  $32, R1, R1
 	ADD  $32, R2, R2
 	B    loop
@@ -216,7 +206,6 @@ fast2:
 fast3:
 	VLD1 (R0), [V0.H8]
 	VST1 [V0.H8], (R2)
-	VDUP V0.H[7], V7.H8
 	ADD  $16, R0, R0
 	ADD  $16, R2, R2
 	B    loop
@@ -224,7 +213,6 @@ fast3:
 fast4:
 	VLD1 (R1), [V2.H8]
 	VST1 [V2.H8], (R2)
-	VDUP V2.H[7], V7.H8
 	ADD  $16, R1, R1
 	ADD  $16, R2, R2
 	B    loop
