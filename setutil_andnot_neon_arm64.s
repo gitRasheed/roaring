@@ -116,7 +116,7 @@ nadvA:
 	EMITBLOCK
 	ADD $16, R0
 	CMP R3, R0
-	BHS ndoneNoSpill
+	BHS ntailA
 	VLD1  (R0), [V0.H8]
 	MOVHU (R0), R8
 	MOVHU 14(R0), R9
@@ -192,3 +192,17 @@ nout:
 	LSR  $1, R1, R1
 	MOVD R1, pos2+104(FP)
 	RET
+
+ntailA:
+	// set2 lanes at or below the retired set1 maximum cannot match the
+	// scalar tail; skipping them avoids rescanning up to seven values.
+	VDUP  R9, V4.H8
+	VUMIN V4.H8, V1.H8, V5.H8
+	VCMEQ V5.H8, V1.H8, V5.H8
+	VUZP1 V5.B16, V5.B16, V5.B16
+	VMOV  V5.D[0], R14
+	AND   R12, R14, R14
+	MUL   R12, R14, R14
+	LSR   $56, R14, R14
+	ADD   R14<<1, R1, R1
+	B     ndoneNoSpill
