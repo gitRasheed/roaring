@@ -54,7 +54,7 @@ func difference(set1 []uint16, set2 []uint16, buffer []uint16) int {
 	return pos
 }
 
-func exclusiveUnion2by2(set1 []uint16, set2 []uint16, buffer []uint16) int {
+func localexclusiveUnion2by2(set1 []uint16, set2 []uint16, buffer []uint16) int {
 	if 0 == len(set2) {
 		buffer = buffer[:len(set1)]
 		copy(buffer, set1[:])
