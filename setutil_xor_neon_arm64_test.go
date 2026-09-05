@@ -23,7 +23,7 @@ func xrForced(set1, set2, buffer []uint16) int {
 	return outLen + localexclusiveUnion2by2(set1[pos1:], set2[pos2:], buffer[outLen:])
 }
 
-// xrOracle is a toggle bitset sharing no code with either merge; duplicate-free inputs only.
+// xrOracle is a toggle bitset that shares no code with either merge, valid for duplicate-free inputs.
 func xrOracle(a, b []uint16) []uint16 {
 	var bs [1024]uint64
 	for _, v := range a {
@@ -179,7 +179,7 @@ func TestXorNEONCutoff(t *testing.T) {
 	}
 }
 
-// Equal window maxima: T is 32 and both cursors advance a full window.
+// With equal window maxima T is 32 and both cursors advance a full window.
 func TestXorNEONEqualMaxima(t *testing.T) {
 	for k := 1; k <= 16; k++ {
 		a := make([]uint16, 0, 16)
@@ -255,7 +255,7 @@ func TestXorNEONAnnihilation(t *testing.T) {
 	xrExit(t, "annih/long", long, long, 0, 192, 192)
 }
 
-// One edit in a 200-element identical run: a lone survivor through the whole machinery.
+// One edit in a 200-element identical run sends a lone survivor through the whole machinery.
 func TestXorNEONIdenticalRunEdits(t *testing.T) {
 	base := xrSeq(0, 2, 200)
 	for _, p := range []int{0, 1, 7, 8, 15, 16, 17, 23, 24, 31, 32, 63, 64, 99, 100, 150, 190, 198, 199} {
@@ -454,7 +454,7 @@ func TestXorNEONRandom(t *testing.T) {
 	}
 }
 
-// Duplicate-bearing inputs: unspecified values, but stores stay within capacity.
+// Duplicate-bearing inputs get unspecified values but stores stay within capacity.
 func TestXorNEONDuplicateBearing(t *testing.T) {
 	rng := rand.New(rand.NewSource(4242))
 	for i := 0; i < 400; i++ {
@@ -493,7 +493,7 @@ func TestXorNEONDuplicateBearing(t *testing.T) {
 	}
 }
 
-// Raw kernel contract: stops under 16 unread on a side, emits exactly the xor of the consumed prefixes.
+// The raw kernel stops under 16 unread on a side and emits exactly the xor of the consumed prefixes.
 func TestXorNEONKernelExit(t *testing.T) {
 	rng := rand.New(rand.NewSource(777))
 	for i := 0; i < 2000; i++ {

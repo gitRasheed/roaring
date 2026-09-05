@@ -6,12 +6,13 @@
 //
 // Each iteration takes a 16-element window from both inputs. With
 // x = min(A[15], B[15]), the elements at or below x on each side are exactly
-// the values this step settles: nothing unread can fall below x. All 32 lanes
-// go through a bitonic merge network; a value survives when it differs from
-// both neighbours and is at or below x. The cursors advance by the two counts.
+// the values this step settles, because nothing unread can fall below x. All
+// 32 lanes go through a bitonic merge network; a value survives when it
+// differs from both neighbours and is at or below x. The cursors advance by
+// the two counts.
 //
 // Lanes above x are dropped by an explicit compare, never by clamping them to
-// x: a singleton x right before them would then read as a repeat.
+// x, which would make a singleton x right before them read as a repeat.
 //
 // Entry needs 16 unread elements per side, so the output cursor stays at
 // least 32 elements short of cap(buffer) = len1+len2 and the four full-width
@@ -75,7 +76,7 @@
 	ADD   $32, p, Rc             \
 	SUB   Ra>>2, Rc, p
 
-// Drop mask in V9 -> compaction shuffle sv and kept count Rcnt. Clobbers R17, R19, R21.
+// Turn the drop mask in V9 into the compaction shuffle sv and the kept count Rcnt. Clobbers R17, R19, R21.
 #define EXTRACT(sv, Rcnt)            \
 	VUZP1 V9.B16, V9.B16, V9.B16 \
 	VMOV  V9.D[0], R17           \
@@ -114,7 +115,7 @@ TEXT ·xorKernelNEON(SB), NOSPLIT, $0-104
 	MOVD shuf+72(FP), R6
 	MOVD R2, R5
 
-	// Loop ends: the last cursor that still leaves 16 unread per side.
+	// Loop ends are the last cursors that still leave 16 unread per side.
 	ADD  R3<<1, R0, R3
 	SUB  $32, R3, R3
 	ADD  R4<<1, R1, R4

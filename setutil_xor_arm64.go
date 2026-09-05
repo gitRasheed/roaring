@@ -18,7 +18,7 @@ func exclusiveUnion2by2(set1 []uint16, set2 []uint16, buffer []uint16) int {
 	// Callers such as xorArray pass a zero-length buffer with capacity.
 	buffer = buffer[:cap(buffer)]
 	outLen, pos1, pos2 := xorKernelNEON(set1, set2, buffer, &uniqshuf[0])
-	// Everything unread is above the last emitted value: no seam check.
+	// Everything unread is above the last emitted value, so the tails need no seam check.
 	return outLen + localexclusiveUnion2by2(set1[pos1:], set2[pos2:], buffer[outLen:])
 }
 
