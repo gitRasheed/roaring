@@ -4,36 +4,26 @@
 
 // Block-maximum partition kernel for exclusiveUnion2by2.
 //
-// Per iteration both inputs contribute a 16-element window:
-//   A = set1[pa:pa+16], B = set2[pb:pb+16], am = A[15], bm = B[15]
-//   cntA = #{i: A[i] <= bm}, cntB = #{i: B[i] <= am}, T = cntA + cntB
-// With x = min(am,bm) those counts are exactly the elements <= x on each
-// side, so the T smallest of the 32 merged values decide the symmetric
-// difference up to x and nothing outside the two windows can fall below x.
-// The merge network sorts all 32; a value survives when it differs from both
-// its neighbours and is at or below x. The cursors advance by cntA and cntB.
+// Each iteration takes a 16-element window from both inputs. With
+// x = min(A[15], B[15]), the elements at or below x on each side are exactly
+// the values this step settles: nothing unread can fall below x. All 32 lanes
+// go through a bitonic merge network; a value survives when it differs from
+// both neighbours and is at or below x. The cursors advance by the two counts.
 //
-// Duplicates come in adjacent pairs after the sort, so both members are
-// dropped by OR-ing predecessor equality with its one-lane shift. Lanes above
-// x are dropped by an explicit compare, never by clamping them to x: a
-// singleton x immediately before the invalid lanes would then look like a
-// repeat and be dropped with them.
+// Lanes above x are dropped by an explicit compare, never by clamping them to
+// x: a singleton x right before them would then read as a repeat.
 //
-// Entry needs 16 unread elements on each side, so consumed >= output + 32
-// short of the len1+len2 capacity and the four full-width stores need no
-// reserve. Output is a fresh buffer, so no store can alias an input.
+// Entry needs 16 unread elements per side, so the output cursor stays at
+// least 32 elements short of cap(buffer) = len1+len2 and the four full-width
+// stores need no reserve. Output never aliases an input.
 //
-// Register use:
-//   R0/R1 byte cursors into set1/set2, R3/R4 their loop end addresses,
-//   R2 output cursor, R5 output base, R6 uniqshuf table,
-//   R12 = 0x0101010101010101, R13 = 0x0102040810204080, R20 = 8.
-//   V0-V3 A/B windows, then predecessor-equality masks. V4 am, V5 bm, V6 x,
-//   V16-V19 merged 32, V20-V23 compaction shuffles,
-//   V29 all ones, V30 = [0, FFFF x7], V31 zero.
+// Registers: R0/R1 input cursors, R3/R4 loop ends, R2 output cursor, R5 output
+// base, R6 uniqshuf, R12/R13 movemask constants, R20 = 8. V0-V3 windows and
+// then predecessor-equality masks, V4/V5 window maxima, V6 x, V16-V19 merged,
+// V20-V23 shuffles, V29 all ones, V30 = [0, FFFF x7], V31 zero.
 
-// Sort two 8-element bitonic sequences u,v (as produced by a compare-exchange
-// pair) into lo,hi. Transposed network: one TRN pair per distance, both
-// halves cleaned at once, ZIP to untranspose. Clobbers V14, V15, u, v.
+// Sort the bitonic pair u,v into lo,hi: transposed network, one TRN pair per
+// distance, ZIP to untranspose. Clobbers V14, V15, u, v.
 #define CLEAN(u, v, lo, hi)         \
 	VTRN1 v.D2, u.D2, V14.D2   \
 	VTRN2 v.D2, u.D2, V15.D2   \
@@ -50,9 +40,8 @@
 	VZIP1 v.H8, u.H8, lo.H8    \
 	VZIP2 v.H8, u.H8, hi.H8
 
-// Merge sorted (V0,V1) with sorted (V2,V3) into sorted V16..V19.
-// Reversing B makes the concatenation bitonic; two compare-exchange stages
-// split it into two bitonic 16-sequences, each cleaned by CLEAN.
+// Merge sorted (V0,V1) and (V2,V3) into sorted V16..V19: reverse B, two
+// compare-exchange stages, then CLEAN each bitonic half.
 #define MERGE32                            \
 	VREV64 V3.H8, V8.H8                \
 	VEXT   $8, V8.B16, V8.B16, V8.B16  \
@@ -69,11 +58,9 @@
 	CLEAN(V8, V9, V16, V17)            \
 	CLEAN(V10, V11, V18, V19)
 
-// Count the lanes of the 16-element window (v0,v1) that are <= the broadcast
-// max m, then advance byte cursor p. The compare mask of a sorted window is a
-// prefix, so the byte-collapsed pair of doublewords is 2^(8*cnt)-1 in each
-// half and cnt = (128 - clz_lo - clz_hi) >> 3; the byte advance is that
-// shifted one less. Clobbers t0, t1, Ra, Rb, Rc.
+// Advance byte cursor p by the lanes of window (v0,v1) that are <= m. The
+// compare mask of a sorted window is a prefix, so the two byte-collapsed
+// doublewords give cnt = (128 - clz_lo - clz_hi) >> 3. Clobbers t0, t1, Ra-Rc.
 #define COUNTADV(v0, v1, m, t0, t1, Ra, Rb, Rc, p) \
 	VUMIN v0.H8, m.H8, t0.H8     \
 	VCMEQ t0.H8, v0.H8, t0.H8    \
@@ -88,8 +75,7 @@
 	ADD   $32, p, Rc             \
 	SUB   Ra>>2, Rc, p
 
-// Turn the halfword drop mask in V9 into the compaction shuffle sv and the
-// kept-lane count Rcnt. Clobbers R17, R19, R21.
+// Drop mask in V9 -> compaction shuffle sv and kept count Rcnt. Clobbers R17, R19, R21.
 #define EXTRACT(sv, Rcnt)            \
 	VUZP1 V9.B16, V9.B16, V9.B16 \
 	VMOV  V9.D[0], R17           \
@@ -102,15 +88,13 @@
 	ADD   R19<<4, R6, R21        \
 	VLD1  (R21), [sv.B16]
 
-// Drop a lane when it repeats its predecessor (ep) or its successor, the
-// latter being ep shifted one lane down with epNext supplying lane 7.
+// Drop lanes equal to their predecessor (ep) or successor (ep shifted down, epNext feeding lane 7).
 #define PREPDROP(ep, epNext, sv, Rcnt)       \
 	VEXT $2, epNext.B16, ep.B16, V8.B16  \
 	VORR V8.B16, ep.B16, V9.B16          \
 	EXTRACT(sv, Rcnt)
 
-// As PREPDROP, and also drop the lanes of cur above x. There is no unsigned
-// greater-than mnemonic, so the test is the complement of max(cur,x) == x.
+// PREPDROP plus the lanes of cur above x: no unsigned greater-than mnemonic, so complement max(cur,x) == x.
 #define PREPDROPX(cur, ep, epNext, sv, Rcnt)   \
 	VEXT  $2, epNext.B16, ep.B16, V8.B16   \
 	VORR  V8.B16, ep.B16, V9.B16           \
@@ -130,7 +114,7 @@ TEXT ·xorKernelNEON(SB), NOSPLIT, $0-104
 	MOVD shuf+72(FP), R6
 	MOVD R2, R5
 
-	// Last cursor position that still leaves 16 unread elements per side.
+	// Loop ends: the last cursor that still leaves 16 unread per side.
 	ADD  R3<<1, R0, R3
 	SUB  $32, R3, R3
 	ADD  R4<<1, R1, R4
@@ -150,10 +134,8 @@ loop:
 	CMP R4, R1
 	BHI done
 
-	// Non-overlapping windows: the lower one carries no partner, so it is
-	// emitted as loaded and the merge, the counts and the compaction are all
-	// skipped. Scalar endpoint loads resolve the branch without waiting on the
-	// vector loads. Boundary equality falls through to the general path.
+	// A window wholly below the other side is copied as is; boundary equality
+	// falls through to the general path.
 	MOVHU 30(R0), R8
 	MOVHU (R1), R9
 	MOVHU 30(R1), R10
@@ -163,8 +145,7 @@ loop:
 	CMP   R11, R10
 	BLO   copyB16
 
-	// Half-window retry: ownership runs shorter than the window never let
-	// the tests above fire, so they are repeated at 8 elements.
+	// Same gates at half a window, for ownership runs shorter than 16.
 	MOVHU 14(R0), R16
 	CMP   R9, R16
 	BLO   copyA8
@@ -175,8 +156,7 @@ loop:
 	VLD1 (R0), [V0.H8, V1.H8]
 	VLD1 (R1), [V2.H8, V3.H8]
 
-	// Identical windows cancel entirely. The head compare filters the test
-	// out of the shapes where it never fires.
+	// Identical windows cancel entirely; the head compare gates the test.
 	CMP   R9, R11
 	BNE   general
 	VCMEQ V2.H8, V0.H8, V8.H8
@@ -199,9 +179,8 @@ general:
 
 	MERGE32
 
-	// Predecessor equality on the raw sorted values. Lane 0 of E0 has no
-	// predecessor in the window and everything already retired is strictly
-	// smaller, so clear it rather than compare against a sentinel.
+	// Predecessor equality on the sorted values; lane 0 has no predecessor
+	// and everything retired earlier is strictly smaller, so it is cleared.
 	VEXT  $14, V16.B16, V16.B16, V8.B16
 	VCMEQ V8.H8, V16.H8, V0.H8
 	VAND  V30.B16, V0.B16, V0.B16

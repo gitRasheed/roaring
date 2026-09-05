@@ -13,8 +13,7 @@ import (
 
 const xrCanary = 0xA5A5
 
-// xrForced skips the dispatch threshold so short adversaries still reach the
-// kernel. It calls the assembly directly, never through a func value.
+// xrForced skips the dispatch threshold; a direct call keeps the wrapper allocation-free.
 func xrForced(set1, set2, buffer []uint16) int {
 	if len(set1) < 16 || len(set2) < 16 || cap(buffer) < len(set1)+len(set2) {
 		return localexclusiveUnion2by2(set1, set2, buffer)
@@ -24,8 +23,7 @@ func xrForced(set1, set2, buffer []uint16) int {
 	return outLen + localexclusiveUnion2by2(set1[pos1:], set2[pos2:], buffer[outLen:])
 }
 
-// xrOracle is a 65536-bit toggle bitset, sharing no code with either merge
-// path. Valid only for duplicate-free inputs.
+// xrOracle is a toggle bitset sharing no code with either merge; duplicate-free inputs only.
 func xrOracle(a, b []uint16) []uint16 {
 	var bs [1024]uint64
 	for _, v := range a {
@@ -63,8 +61,7 @@ func xrEqual(x, y []uint16) bool {
 	return true
 }
 
-// xrRun checks one input pair through both arms, in both orientations, on an
-// exact-capacity buffer guarded by canary words.
+// xrRun checks both arms in both orientations on an exact-capacity buffer with canaries.
 func xrRun(t *testing.T, name string, a, b []uint16, dupFree bool) {
 	t.Helper()
 	arms := []struct {
@@ -119,8 +116,7 @@ func xrSeq(start, step, n int) []uint16 {
 	return out
 }
 
-// TestXorNEONEqualPairEveryLane puts the one shared value at every merged lane
-// 0 through 30, which includes the 7/8, 15/16 and 23/24 vector boundaries.
+// One shared value at every merged lane 0..30, across the 8-lane boundaries.
 func TestXorNEONEqualPairEveryLane(t *testing.T) {
 	for p := 0; p <= 30; p++ {
 		a := []uint16{uint16(p)}
@@ -141,8 +137,7 @@ func TestXorNEONEqualPairEveryLane(t *testing.T) {
 	}
 }
 
-// xrCut builds a 16-element pair whose first partition consumes T merged
-// lanes. The cutoff value is a[15]; dupCut also places it in set2.
+// xrCut builds a pair whose first partition consumes T merged lanes; dupCut puts the cutoff a[15] in set2 too.
 func xrCut(T int, dupCut bool) ([]uint16, []uint16) {
 	a := xrSeq(0, 2, 16) // 0..30, maximum 30
 	nb := T - 16
@@ -163,16 +158,13 @@ func xrCut(T int, dupCut bool) ([]uint16, []uint16) {
 	return a, b
 }
 
-// TestXorNEONCutoff walks every reachable T. With a unique cutoff the lanes
-// above it are invalid and the last valid lane is a singleton, the case a
-// clamping implementation deletes.
+// Every reachable T; a unique cutoff leaves a singleton right before the invalid lanes.
 func TestXorNEONCutoff(t *testing.T) {
 	for T := 16; T <= 32; T++ {
 		if T <= 31 {
 			a, b := xrCut(T, false)
 			xrRun(t, fmt.Sprintf("cut%d", T), a, b, true)
-			// Same cutoff with more input behind it, so the partition is
-			// followed by further partitions rather than the tail.
+			// Same cutoff followed by further partitions rather than the tail.
 			a2 := append(append([]uint16(nil), a...), xrSeq(200, 2, 40)...)
 			b2 := append(append([]uint16(nil), b...), xrSeq(201, 2, 40)...)
 			xrRun(t, fmt.Sprintf("cut%d+tail", T), a2, b2, true)
@@ -187,8 +179,7 @@ func TestXorNEONCutoff(t *testing.T) {
 	}
 }
 
-// TestXorNEONEqualMaxima gives both windows the same maximum, so T is 32 and
-// both cursors advance a full window.
+// Equal window maxima: T is 32 and both cursors advance a full window.
 func TestXorNEONEqualMaxima(t *testing.T) {
 	for k := 1; k <= 16; k++ {
 		a := make([]uint16, 0, 16)
@@ -197,7 +188,6 @@ func TestXorNEONEqualMaxima(t *testing.T) {
 			a = append(a, uint16(4*i))
 			b = append(b, uint16(4*i+2))
 		}
-		// Force a shared maximum and k shared values below it.
 		a[15] = 100
 		b[15] = 100
 		for i := 0; i < k-1 && i < 15; i++ {
@@ -208,8 +198,7 @@ func TestXorNEONEqualMaxima(t *testing.T) {
 	}
 }
 
-// xrExit asserts the raw kernel consumed and emitted exactly what a path
-// transition requires, so a fixture cannot silently stop reaching it.
+// xrExit pins the kernel's own accounting so a fixture cannot silently stop reaching its path.
 func xrExit(t *testing.T, name string, a, b []uint16, outLen, pos1, pos2 int) {
 	t.Helper()
 	buf := make([]uint16, len(a)+len(b))
@@ -220,10 +209,7 @@ func xrExit(t *testing.T, name string, a, b []uint16, outLen, pos1, pos2 int) {
 	}
 }
 
-// TestXorNEONAnnihilation places an identical 16-element window at entry,
-// after both copy fast paths, after a general partition and just before the
-// tail. Each fixture pins the kernel's own accounting so the transition it
-// names stays reachable.
+// An identical window at entry, after each copy path, after a general partition, before the tail.
 func TestXorNEONAnnihilation(t *testing.T) {
 	block := func(base int) []uint16 { return xrSeq(base, 1, 16) }
 
@@ -232,23 +218,21 @@ func TestXorNEONAnnihilation(t *testing.T) {
 	b := append(block(0), xrSeq(101, 2, 20)...)
 	xrRun(t, "annih/entry", a, b, true)
 
-	// After a 16-lane copy: set1's first window is strictly below set2's head.
+	// After a 16-lane copy.
 	a = append(xrSeq(0, 1, 16), block(1000)...)
 	a = append(a, xrSeq(2000, 2, 5)...)
 	b = append(block(1000), xrSeq(2001, 2, 5)...)
 	xrRun(t, "annih/aftercopy16", a, b, true)
 	xrExit(t, "annih/aftercopy16", a, b, 16, 32, 16)
 
-	// After an 8-lane copy: only the half-window gate separates the windows.
+	// After an 8-lane copy.
 	a = append(xrSeq(0, 1, 8), block(1000)...)
 	a = append(a, xrSeq(2000, 2, 5)...)
 	b = append(block(1000), xrSeq(2001, 2, 5)...)
 	xrRun(t, "annih/aftercopy8", a, b, true)
 	xrExit(t, "annih/aftercopy8", a, b, 8, 24, 16)
 
-	// After a general partition. The shared window maximum makes that
-	// partition consume 16 from each side, so the identical block that
-	// follows stays aligned.
+	// After a general partition; the shared maximum keeps the next block aligned.
 	head1 := append(xrSeq(0, 2, 15), 31)
 	head2 := append(xrSeq(1, 2, 15), 31)
 	a = append(append([]uint16(nil), head1...), block(1000)...)
@@ -271,9 +255,7 @@ func TestXorNEONAnnihilation(t *testing.T) {
 	xrExit(t, "annih/long", long, long, 0, 192, 192)
 }
 
-// TestXorNEONIdenticalRunEdits mutates one position of a 200-element identical
-// run, which is the shape where a single surviving value has to travel through
-// the whole partition machinery.
+// One edit in a 200-element identical run: a lone survivor through the whole machinery.
 func TestXorNEONIdenticalRunEdits(t *testing.T) {
 	base := xrSeq(0, 2, 200)
 	for _, p := range []int{0, 1, 7, 8, 15, 16, 17, 23, 24, 31, 32, 63, 64, 99, 100, 150, 190, 198, 199} {
@@ -292,18 +274,14 @@ func TestXorNEONIdenticalRunEdits(t *testing.T) {
 	}
 }
 
-// TestXorNEONStrictGates checks the fast-forward gates at boundary equality,
-// where a non-strict comparison would emit a value that must cancel.
+// Copy gates at boundary equality, where a non-strict compare would emit a value that must cancel.
 func TestXorNEONStrictGates(t *testing.T) {
 	for _, n := range []int{16, 24, 32, 48} {
-		// set1's window maximum equals set2's head.
 		a := xrSeq(0, 1, n)
 		b := xrSeq(n-1, 1, n)
 		xrRun(t, fmt.Sprintf("gate16/eq/%d", n), a, b, true)
-		// Strictly separated, the gate must fire and copy.
 		b = xrSeq(n+100, 1, n)
 		xrRun(t, fmt.Sprintf("gate16/lt/%d", n), a, b, true)
-		// Half-window boundary equality: set1[7] equals set2[0].
 		a = xrSeq(0, 1, n)
 		b = xrSeq(7, 1, n)
 		xrRun(t, fmt.Sprintf("gate8/eq/%d", n), a, b, true)
@@ -364,26 +342,20 @@ func TestXorNEONExtremeValues(t *testing.T) {
 		sort.Slice(b2, func(i, j int) bool { return b2[i] < b2[j] })
 		xrRun(t, fmt.Sprintf("edge%d/both", e), a, b2, true)
 	}
-	// Every edge on both sides at once, plus a window of high values.
 	a := append([]uint16{0, 1}, xrSeq(0xFFC0, 1, 64)...)
 	b := append([]uint16{0}, xrSeq(0xFFC1, 2, 32)...)
 	xrRun(t, "edge/all", a, b, true)
 
-	// The cutoff is a singleton 0xFFFE with 0xFFFF as the invalid lane right
-	// behind it, which is the pair a clamping implementation deletes, at the
-	// unsigned endpoint.
+	// Singleton cutoff 0xFFFE with 0xFFFF as the invalid lane behind it.
 	xrRun(t, "edge/cutoffFFFE", xrSeq(0xFFE0, 2, 16), xrSeq(0xFFE1, 2, 16), true)
 
-	// Differing windows sharing the maximum 0xFFFF, so the endpoint cancels
-	// through the general path rather than through annihilation.
+	// 0xFFFF cancels through the general path, not annihilation.
 	xrRun(t, "edge/sharedFFFF",
 		append(xrSeq(0xFFC0, 2, 15), 0xFFFF),
 		append(xrSeq(0xFFC1, 2, 15), 0xFFFF), true)
 }
 
-// TestXorNEONNoOverRead reruns each case with different poison immediately
-// past both inputs. A load beyond either window would let that poison reach
-// the output.
+// Different poison past both inputs must not change the output.
 func TestXorNEONNoOverRead(t *testing.T) {
 	poisons := []uint16{0, 0xFFFF, 0x5555, 0xAAAA}
 	rng := rand.New(rand.NewSource(31337))
@@ -482,9 +454,7 @@ func TestXorNEONRandom(t *testing.T) {
 	}
 }
 
-// TestXorNEONDuplicateBearing is outside the strict-set contract: the result
-// is unspecified, but the kernel must stay inside the buffer capacity and
-// return a length it can hold.
+// Duplicate-bearing inputs: unspecified values, but stores stay within capacity.
 func TestXorNEONDuplicateBearing(t *testing.T) {
 	rng := rand.New(rand.NewSource(4242))
 	for i := 0; i < 400; i++ {
@@ -523,9 +493,7 @@ func TestXorNEONDuplicateBearing(t *testing.T) {
 	}
 }
 
-// TestXorNEONKernelExit checks the raw kernel contract: it stops with fewer
-// than 16 elements unread on one side, never over-reads, and the emitted
-// prefix is exactly the symmetric difference of the consumed prefixes.
+// Raw kernel contract: stops under 16 unread on a side, emits exactly the xor of the consumed prefixes.
 func TestXorNEONKernelExit(t *testing.T) {
 	rng := rand.New(rand.NewSource(777))
 	for i := 0; i < 2000; i++ {
@@ -560,7 +528,6 @@ func TestXorNEONKernelExit(t *testing.T) {
 	}
 }
 
-// TestXorNEONDispatchBoundary walks the threshold on each side.
 func TestXorNEONDispatchBoundary(t *testing.T) {
 	sizes := []int{neonXorThreshold - 1, neonXorThreshold, neonXorThreshold + 1}
 	for _, la := range sizes {
@@ -576,8 +543,7 @@ func TestXorNEONDispatchBoundary(t *testing.T) {
 	}
 }
 
-// TestXorNEONContainerDispatch proves the kernel is reached only from the
-// array/array path.
+// The kernel is reached only from the array/array path.
 func TestXorNEONContainerDispatch(t *testing.T) {
 	a := New()
 	for i := 0; i < 100; i++ {
@@ -618,7 +584,7 @@ func TestXorNEONContainerDispatch(t *testing.T) {
 		t.Fatalf("array/bitmap xor mismatch")
 	}
 
-	// Combined cardinality above 4096 must build a bitmap, not call the kernel.
+	// Above 4096 combined the caller builds a bitmap instead.
 	big1 := New()
 	big2 := New()
 	for i := 0; i < 3000; i++ {
@@ -639,14 +605,11 @@ func xrBitmapValues(b *Bitmap) []uint16 {
 	return out
 }
 
-/* ---------------- benchmarks ---------------- */
-
 const xrVariants = 128
 
 type xrPair struct{ a, b []uint16 }
 
-// xrShape builds one fixed-seed variant of a named shape with n elements per
-// side, except for the skew shapes where set2 is the long side.
+// xrShape builds one fixed-seed variant with n elements per side; skew shapes make set2 the long side.
 func xrShape(shape string, n int, seed int64) xrPair {
 	rng := rand.New(rand.NewSource(seed))
 	switch shape {
@@ -685,9 +648,7 @@ func xrShape(shape string, n int, seed int64) xrPair {
 	panic("unknown shape " + shape)
 }
 
-// xrSwapShape draws both sides from a shared 2n pool and swaps every kth value
-// of set1 for a pool value it does not hold, so the differences stay
-// interspersed and both sides keep length n.
+// xrSwapShape swaps every kth value of set1 for a pool value it lacks, keeping the differences interspersed.
 func xrSwapShape(rng *rand.Rand, n, k int) xrPair {
 	pool := xrPick(rng, 0x10000, 2*n)
 	perm := rng.Perm(2 * n)
@@ -738,8 +699,7 @@ var xrShapes = []string{
 	"runs4", "runs8", "runs16", "runs32", "skew1x4", "skew1x8",
 }
 
-// TestXorNEONShapeGenerators guards the benchmark inputs: the C lab lost a
-// measurement round to generators that drifted off their nominal lengths.
+// Benchmark generators must hold their nominal lengths and stay strictly sorted.
 func TestXorNEONShapeGenerators(t *testing.T) {
 	check := func(name string, s []uint16, want int) {
 		if len(s) != want {
@@ -765,7 +725,6 @@ func TestXorNEONShapeGenerators(t *testing.T) {
 			check(shape+"/b", p.b, want2)
 		}
 	}
-	// The near-tie shapes must differ in the advertised proportion.
 	for _, tc := range []struct {
 		shape string
 		want  int
