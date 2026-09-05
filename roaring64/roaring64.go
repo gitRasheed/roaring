@@ -656,8 +656,8 @@ func (rb *Bitmap) Xor(x2 *Bitmap) {
 				pos1++
 				pos2++
 			} else {
-				// TODO: couple be computed in-place for reduced memory usage
-				c := roaring.Xor(rb.highlowcontainer.getContainerAtIndex(pos1), x2.highlowcontainer.getContainerAtIndex(pos2))
+				c := rb.highlowcontainer.getWritableContainerAtIndex(pos1)
+				c.Xor(x2.highlowcontainer.getContainerAtIndex(pos2))
 				if !c.IsEmpty() {
 					rb.highlowcontainer.setContainerAtIndex(pos1, c)
 					pos1++
