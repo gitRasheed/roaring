@@ -19,6 +19,10 @@
 // copies of any value, hence comparing its first lane with its last lane
 // cannot drop the first output.
 //
+// Below 64 elements on either side, or when the 16-lane loop reaches its
+// reserve, an 8-lane partition stage continues with the same invariant.
+// It halves the merge and compaction work and leaves a shorter scalar tail.
+//
 // Register use:
 //   R0/R1 byte cursors into set1/set2, R3/R4 their loop end addresses,
 //   R2 output cursor, R5 output base, R6 uniqshuf table,
@@ -77,6 +81,14 @@
 	ADD   $32, p, Rc           \
 	SUB   Ra>>1, Rc, p
 
+// Eight predicates fit in a doubleword after keeping one byte per lane.
+#define COUNTADV8(t, Ra, Rc, p) \
+	VUZP1 t.B16, t.B16, t.B16 \
+	VMOV  t.D[0], Ra          \
+	CLZ   Ra, Ra              \
+	ADD   $16, p, Rc          \
+	SUB   Ra>>2, Rc, p
+
 // Build the compaction shuffle sv and kept-lane count Rcnt for cur, whose
 // predecessor lane is lane 7 of prv. Clobbers t, R17, R19, R21.
 #define PREP(cur, prv, t, sv, Rcnt) \
@@ -102,6 +114,13 @@ TEXT ·unionPartKernelNEON(SB), NOSPLIT, $0-104
 	MOVD set2_len+32(FP), R4
 	MOVD shuf+72(FP), R6
 	MOVD R2, R5
+	MOVD $0x0101010101010101, R12
+	MOVD $0x0102040810204080, R13
+	MOVD $8, R20
+	CMP  $64, R3
+	BLT  setup8
+	CMP  $64, R4
+	BLT  setup8
 
 	// Stop 24 elements short of each whole-block end. Each iteration leaves
 	// at least 9 elements per side unread; compaction stores extend at most
@@ -114,15 +133,11 @@ TEXT ·unionPartKernelNEON(SB), NOSPLIT, $0-104
 	SUB  $24, R4, R4
 	ADD  R4<<1, R1, R4
 
-	MOVD $0x0101010101010101, R12
-	MOVD $0x0102040810204080, R13
-	MOVD $8, R20
-
 loop:
 	CMP R3, R0
-	BHS done
+	BHS setup8
 	CMP R4, R1
-	BHS done
+	BHS setup8
 
 	// Non-overlapping windows: the lower one is the union up to its own
 	// maximum, so it is emitted as loaded and the merge, the counts and the
@@ -216,6 +231,74 @@ fast4:
 	ADD  $16, R1, R1
 	ADD  $16, R2, R2
 	B    loop
+
+setup8:
+	// Two full compaction stores need 16 unread elements per input to
+	// preserve the relocated-input alias. Cursors need not be aligned.
+	MOVD set1_len+8(FP), R3
+	SUB  $16, R3, R3
+	MOVD set1_base+0(FP), R8
+	ADD  R3<<1, R8, R3
+	MOVD set2_len+32(FP), R4
+	SUB  $16, R4, R4
+	MOVD set2_base+24(FP), R8
+	ADD  R4<<1, R8, R4
+
+loop8:
+	CMP R3, R0
+	BHI done
+	CMP R4, R1
+	BHI done
+
+	MOVHU 14(R0), R8
+	MOVHU (R1), R9
+	CMP R9, R8
+	BLO fastA8
+	MOVHU 14(R1), R10
+	MOVHU (R0), R11
+	CMP R11, R10
+	BLO fastB8
+
+	VLD1 (R0), [V0.H8]
+	VLD1 (R1), [V1.H8]
+	VDUP V0.H[7], V4.H8
+	VDUP V1.H[7], V5.H8
+	WORD $0x6e603ca8 // CMHS V8.8H, V5.8H, V0.8H
+	COUNTADV8(V8, R8, R10, R0)
+	WORD $0x6e613c89 // CMHS V9.8H, V4.8H, V1.8H
+	COUNTADV8(V9, R14, R16, R1)
+	VUMIN V5.H8, V4.H8, V6.H8
+
+	VREV64 V1.H8, V8.H8
+	VEXT   $8, V8.B16, V8.B16, V8.B16
+	VUMIN  V8.H8, V0.H8, V9.H8
+	VUMAX  V8.H8, V0.H8, V10.H8
+	CLEAN(V9, V10, V16, V17)
+	VUMIN V6.H8, V17.H8, V17.H8
+
+	PREP(V16, V16, V8, V20, R22)
+	PREP(V17, V16, V9, V21, R23)
+	VTBL V20.B16, [V16.B16], V12.B16
+	VST1 [V12.B16], (R2)
+	ADD  R22<<1, R2, R2
+	VTBL V21.B16, [V17.B16], V13.B16
+	VST1 [V13.B16], (R2)
+	ADD  R23<<1, R2, R2
+	B loop8
+
+fastA8:
+	VLD1 (R0), [V0.H8]
+	VST1 [V0.H8], (R2)
+	ADD $16, R0, R0
+	ADD $16, R2, R2
+	B loop8
+
+fastB8:
+	VLD1 (R1), [V1.H8]
+	VST1 [V1.H8], (R2)
+	ADD $16, R1, R1
+	ADD $16, R2, R2
+	B loop8
 
 done:
 	SUB  R5, R2, R2

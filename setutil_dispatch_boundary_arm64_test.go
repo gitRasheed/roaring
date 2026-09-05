@@ -9,9 +9,8 @@ import (
 	"testing"
 )
 
-// The dispatch gate moved from 256 to 64: these tests pin the public
-// union2by2 path and the real caller geometries on both sides of the new
-// boundary and of the old one.
+// Cover the short-side and total-work gates, the 16-lane stage boundary,
+// and the production caller geometries.
 
 func boundaryPair(r *rand.Rand, shape string, n1, n2 int) (a, b []uint16) {
 	switch shape {
@@ -52,6 +51,8 @@ func boundaryPair(r *rand.Rand, shape string, n1, n2 int) (a, b []uint16) {
 
 func TestUnion2By2DispatchBoundary(t *testing.T) {
 	pairs := [][2]int{
+		{31, 4096}, {32, 4096}, {4096, 32}, {32, 95}, {32, 96}, {32, 97},
+		{95, 32}, {96, 32}, {97, 32}, {48, 79}, {48, 80}, {48, 81},
 		{63, 63}, {63, 64}, {64, 63}, {64, 64}, {64, 65}, {65, 64},
 		{63, 4096}, {64, 4096}, {4096, 64}, {65, 255}, {255, 65},
 		{255, 255}, {255, 256}, {256, 255}, {256, 256},
@@ -82,7 +83,7 @@ func TestUnion2By2DispatchBoundary(t *testing.T) {
 // geometries — iorArray's relocated in-place alias, self-union, orArray and
 // lazyorArray's fresh-buffer calls — across the dispatch boundary.
 func TestArrayContainerUnionBoundary(t *testing.T) {
-	sizes := []int{63, 64, 65, 128, 255, 256, 300}
+	sizes := []int{31, 32, 33, 63, 64, 65, 95, 96, 97, 128, 255, 256, 300}
 	for _, shape := range []string{"sparse", "dense", "sharedprefix", "runs8"} {
 		for _, n1 := range sizes {
 			for _, n2 := range sizes {

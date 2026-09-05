@@ -35,17 +35,15 @@ func buildUniqshuf() (t [256 * 16]byte) {
 	return t
 }
 
-// Measured dispatch cutoff, not a structural limit. Partition wins the
-// corpus-weighted mix, though some small, regular inputs favor scalar.
+// Short unequal inputs benefit from the eight-lane partition stage, but
+// tiny balanced pairs still favor scalar. Require 128 total elements too.
 const neonUnionThreshold = neonPartMin
 
-// The partition kernel stops 24 elements short of the last whole block in
-// each input, so its loop first runs at 32 aligned elements; 64 is the
-// measured dispatch cutoff.
-const neonPartMin = 64
+// Measured cutoff; the eight-lane stage structurally needs only 16 per side.
+const neonPartMin = 32
 
 func union2by2(set1 []uint16, set2 []uint16, buffer []uint16) int {
-	if len(set1) < neonUnionThreshold || len(set2) < neonUnionThreshold {
+	if len(set1) < neonUnionThreshold || len(set2) < neonUnionThreshold || len(set1)+len(set2) < 128 {
 		return union2by2scalar(set1, set2, buffer)
 	}
 	return unionNEONPart(set1, set2, buffer)
@@ -54,7 +52,7 @@ func union2by2(set1 []uint16, set2 []uint16, buffer []uint16) int {
 func unionNEONPart(set1 []uint16, set2 []uint16, buffer []uint16) int {
 	// Callers such as lazyorArray pass a zero-length buffer with capacity.
 	buffer = buffer[:cap(buffer)]
-	if len(set1) < neonPartMin || len(set2) < neonPartMin {
+	if len(set1) < neonPartMin || len(set2) < neonPartMin || len(set1)+len(set2) < 128 {
 		return union2by2scalar(set1, set2, buffer)
 	}
 	// iorArray's in-place self-union passes set2 and buffer sharing a
