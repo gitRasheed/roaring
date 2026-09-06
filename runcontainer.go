@@ -2418,9 +2418,63 @@ func (rc *runContainer16) lazyOR(a container) container {
 }
 
 func (rc *runContainer16) intersects(a container) bool {
-	// TODO: optimize by doing inplace/less allocation
-	isect := rc.and(a)
-	return !isect.isEmpty()
+	switch c := a.(type) {
+	case *arrayContainer:
+		for i, j := 0, 0; i < len(rc.iv) && j < len(c.content); {
+			iv, value := rc.iv[i], c.content[j]
+			if value < iv.start {
+				j = advanceUntil(c.content, j, len(c.content), iv.start)
+			} else if value > iv.last() {
+				i++
+				if i < len(rc.iv) && rc.iv[i].last() < value {
+					i, _ = rc.findNextIntervalThatIntersectsStartingFrom(i, int(value))
+				}
+			} else {
+				return true
+			}
+		}
+	case *bitmapContainer:
+		for _, iv := range rc.iv {
+			start, last := uint(iv.start), uint(iv.last())
+			firstWord, lastWord := start/64, last/64
+			firstMask := ^uint64(0) << (start % 64)
+			lastMask := ^uint64(0) >> (63 - last%64)
+			if firstWord == lastWord {
+				if c.bitmap[firstWord]&firstMask&lastMask != 0 {
+					return true
+				}
+				continue
+			}
+			if c.bitmap[firstWord]&firstMask != 0 || c.bitmap[lastWord]&lastMask != 0 {
+				return true
+			}
+			for _, word := range c.bitmap[firstWord+1 : lastWord] {
+				if word != 0 {
+					return true
+				}
+			}
+		}
+	case *runContainer16:
+		for i, j := 0, 0; i < len(rc.iv) && j < len(c.iv); {
+			x, y := rc.iv[i], c.iv[j]
+			if x.last() < y.start {
+				i++
+				if i < len(rc.iv) && rc.iv[i].last() < y.start {
+					i, _ = rc.findNextIntervalThatIntersectsStartingFrom(i, int(y.start))
+				}
+			} else if y.last() < x.start {
+				j++
+				if j < len(c.iv) && c.iv[j].last() < x.start {
+					j, _ = c.findNextIntervalThatIntersectsStartingFrom(j, int(x.start))
+				}
+			} else {
+				return true
+			}
+		}
+	default:
+		panic("unsupported container type")
+	}
+	return false
 }
 
 func (rc *runContainer16) xor(a container) container {

@@ -186,3 +186,51 @@ func BenchmarkRealDataFastOr(b *testing.B) {
 		return FastOr(bitmaps...).GetCardinality()
 	})
 }
+
+func BenchmarkRealDataIntersects(b *testing.B) {
+	if !benchRealData {
+		b.SkipNow()
+	}
+	for _, dataset := range realDatasets {
+		for _, optimize := range []bool{false, true} {
+			mode := "raw"
+			if optimize {
+				mode = "run"
+			}
+			b.Run(dataset+"/"+mode, func(b *testing.B) {
+				bitmaps, err := retrieveRealDataBitmaps(dataset, optimize)
+				if err != nil {
+					b.Fatal(err)
+				}
+				want := 0
+				for j := 1; j < len(bitmaps); j++ {
+					x, y := bitmaps[j-1], bitmaps[j]
+					if x.GetCardinality() > y.GetCardinality() {
+						x, y = y, x
+					}
+					it := x.Iterator()
+					for it.HasNext() {
+						if y.Contains(it.Next()) {
+							want++
+							break
+						}
+					}
+				}
+				var got int
+				b.ReportAllocs()
+				for b.Loop() {
+					got = 0
+					for j := 1; j < len(bitmaps); j++ {
+						if bitmaps[j-1].Intersects(bitmaps[j]) {
+							got++
+						}
+					}
+				}
+				if got != want {
+					b.Fatalf("got %d, want %d", got, want)
+				}
+				b.ReportMetric(float64(len(bitmaps)-1), "pairs/op")
+			})
+		}
+	}
+}
